@@ -1,4 +1,3 @@
-
 /**
  * QUEST PROTOCOL | STANDALONE WITNESS NODE
  * 
@@ -7,9 +6,9 @@
  * 2. Run: node witness-node.js
  */
 
-const WebSocket = require('ws');
-const sqlite3 = require('sqlite3').verbose();
-const fs = require('fs');
+import { WebSocketServer, WebSocket } from 'ws';
+import sqlite3 from 'sqlite3';
+import fs from 'fs';
 
 const CONFIG = {
     PORT: 8080,
@@ -18,7 +17,9 @@ const CONFIG = {
     SIDECHAIN_ID: 'quest_protocol_v1'
 };
 
-const db = new sqlite3.Database(CONFIG.DB_PATH);
+// Initialize SQLite with verbose logging
+const sqlite = sqlite3.verbose();
+const db = new sqlite.Database(CONFIG.DB_PATH);
 
 // Init Schema
 db.serialize(() => {
@@ -33,31 +34,36 @@ db.serialize(() => {
     console.log(`[NODE] Database initialized at ${CONFIG.DB_PATH}`);
 });
 
-const wss = new WebSocket.Server({ port: CONFIG.PORT });
+const wss = new WebSocketServer({ port: CONFIG.PORT });
 
 wss.on('connection', function connection(ws) {
     console.log('[P2P] Peer connected');
     
     ws.on('message', function incoming(message) {
-        const data = JSON.parse(message);
-        console.log('[P2P] Received:', data.type);
-        
-        switch(data.type) {
-            case 'GET_BLOCKS':
-                // Send blocks to peer
-                db.all("SELECT * FROM blocks ORDER BY index_id DESC LIMIT 10", (err, rows) => {
-                    ws.send(JSON.stringify({ type: 'BLOCK_DATA', data: rows }));
-                });
-                break;
-            case 'NEW_BLOCK':
-                // Validate and save block
-                validateBlock(data.block, (isValid) => {
-                    if (isValid) {
-                        saveBlock(data.block);
-                        broadcast(message); // Propagate
-                    }
-                });
-                break;
+        try {
+            const data = JSON.parse(message);
+            console.log('[P2P] Received:', data.type);
+            
+            switch(data.type) {
+                case 'GET_BLOCKS':
+                    // Send blocks to peer
+                    db.all("SELECT * FROM blocks ORDER BY index_id DESC LIMIT 10", (err, rows) => {
+                        if (err) return console.error(err);
+                        ws.send(JSON.stringify({ type: 'BLOCK_DATA', data: rows }));
+                    });
+                    break;
+                case 'NEW_BLOCK':
+                    // Validate and save block
+                    validateBlock(data.block, (isValid) => {
+                        if (isValid) {
+                            saveBlock(data.block);
+                            broadcast(message); // Propagate
+                        }
+                    });
+                    break;
+            }
+        } catch (e) {
+            console.error('[P2P] Parse Error:', e.message);
         }
     });
 });
@@ -72,14 +78,17 @@ function broadcast(data) {
 
 function validateBlock(block, callback) {
     // Basic verification
-    if (!block.hash || !block.validator) return callback(false);
+    if (!block || !block.hash || !block.validator) return callback(false);
     callback(true);
 }
 
 function saveBlock(block) {
     db.run(`INSERT INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig) 
             VALUES (?, ?, ?, ?, ?, ?)`, 
-            [block.index, block.hash, block.previousHash, block.validator, block.timestamp, block.witnessSignature]);
+            [block.index, block.hash, block.previousHash, block.validator, block.timestamp, block.witnessSignature],
+            (err) => {
+                if (err) console.error('[DB] Insert Error:', err.message);
+            });
 }
 
 console.log(`
