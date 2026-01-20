@@ -1,6 +1,11 @@
 # Changelog
 
-## v1.2.1 (Current)
+## v1.2.2 (Current)
+- **Build**: Fixed Vite configuration to exclude `sql.js` from `manualChunks`, resolving production build errors.
+- **Documentation**: Added Augment System instructions to the Asset Inventory page.
+- **UI**: Added a "Protocol Guide" header to the Inventory view for new users.
+
+## v1.2.1
 - **Deployment**: Added `package.json` and Vite configuration for standard Linux builds.
 - **Gameplay**: Added **Ascension Module** in Space Attack Hangar. Players can now refit basic units into Elite units while keeping their XP and Level.
 - **UI**: Added "PRIME" visual indicators for Elite NFTs in the inventory.

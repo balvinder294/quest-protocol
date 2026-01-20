@@ -10,8 +10,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom', 'lucide-react'],
-          sql: ['sql.js'] // If installed via npm, otherwise handled by CDN in index.html
+          vendor: ['react', 'react-dom', 'react-router-dom', 'lucide-react']
         }
       }
     }

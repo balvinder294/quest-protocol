@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+
+import React, { createContext, useState, useEffect, useContext } from 'react';
 import { 
   ChainState, 
   Block, 
@@ -13,6 +14,7 @@ import { simpleHash, generateId } from '../services/chainUtils';
 import { checkBlurtAccount } from '../services/blurtService';
 import { initDB, saveDB, getDb, exportSnapshot, importSnapshot } from '../services/sqliteService';
 
+// Added missing interface properties for swap and sync functionality
 interface ChainContextType {
   chain: ChainState;
   user: UserState;
@@ -31,6 +33,8 @@ interface ChainContextType {
   activateNode: () => void;
   createSnapshot: () => void;
   restoreSnapshot: (file: File) => Promise<void>;
+  swapTokens: (amount: number, direction: 'IN' | 'OUT') => void;
+  syncWithBlurt: () => Promise<void>;
 }
 
 const ChainContext = createContext<ChainContextType | undefined>(undefined);
@@ -374,10 +378,41 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     executeTx('0x00', user.username, amount, 'MINT', 'Admin Mint');
   };
 
+  // Added missing swapTokens implementation
+  const swapTokens = (amount: number, direction: 'IN' | 'OUT') => {
+    if (!user.username) return;
+    const RATE = 10;
+    if (direction === 'IN') {
+      // BLURT -> QUEST
+      executeTx('BRIDGE', user.username, amount * RATE, 'MINT', 'Bridge Deposit');
+    } else {
+      // QUEST -> BLURT
+      if (user.balance < amount) {
+        alert("Insufficient QUEST balance for withdrawal");
+        return;
+      }
+      executeTx(user.username, 'BRIDGE', amount, 'TRANSFER', 'Bridge Withdrawal');
+    }
+  };
+
+  // Added missing syncWithBlurt implementation
+  const syncWithBlurt = async () => {
+    setIsLoading(true);
+    try {
+      // Simulation of blockchain sync delay
+      await new Promise(r => setTimeout(r, 1500));
+      refreshState();
+    } catch (e) {
+      console.error("Blurt synchronization failed", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <ChainContext.Provider value={{ 
       chain, user, isLoading, login, logout, sendTransaction, mineBlock, buyGamePass, mintTokens, addGameReward, activateNode,
-      createSnapshot, restoreSnapshot, provisionNFT, upgradeNFT, addNFTExperience, promoteNFT
+      createSnapshot, restoreSnapshot, provisionNFT, upgradeNFT, addNFTExperience, promoteNFT, swapTokens, syncWithBlurt
     }}>
       {children}
     </ChainContext.Provider>

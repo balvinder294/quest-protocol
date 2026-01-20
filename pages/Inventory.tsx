@@ -1,4 +1,3 @@
-
 import React, { useState, useMemo } from 'react';
 import { useChain } from '../context/ChainContext';
 import { SimulationNFT } from '../types';
@@ -14,7 +13,9 @@ import {
   Sword, 
   ShieldAlert,
   Search,
-  LayoutGrid
+  LayoutGrid,
+  Info,
+  HelpCircle
 } from 'lucide-react';
 
 type SortKey = 'level' | 'rarity' | 'type' | 'value';
@@ -68,12 +69,10 @@ export const Inventory: React.FC = () => {
   }, [user.inventory, filterType, sortKey, sortDir, search]);
 
   const getIcon = (nft: SimulationNFT) => {
-    // Specific icons based on subType or generic type
     if (nft.type === 'CHARACTER') {
         if (['PILOT', 'COMMANDER', 'CYBORG'].includes(nft.subType)) return <Cpu size={24} />;
         return <User size={24} />;
     }
-    // Augments
     if (nft.subType === 'ATTACK') return <Sword size={24} />;
     if (nft.subType === 'HEALTH') return <Shield size={24} />;
     if (nft.subType === 'LUCK') return <Zap size={24} />;
@@ -107,6 +106,27 @@ export const Inventory: React.FC = () => {
           <p className="text-slate-400 font-mono text-sm">
             Total Modules: {user.inventory.length} | Net Worth: {user.inventory.reduce((acc, i) => acc + (i.value || 0), 0)} Units
           </p>
+        </div>
+      </div>
+
+      {/* Protocol Guide / Instructions */}
+      <div className="bg-sci-cyan/5 border border-sci-cyan/20 rounded-xl p-6 mb-8 flex flex-col md:flex-row gap-6 items-center">
+        <div className="bg-sci-cyan/10 p-4 rounded-full text-sci-cyan border border-sci-cyan/20">
+          <HelpCircle size={32} />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-white font-black text-sm uppercase mb-2 flex items-center">
+            <Info size={14} className="mr-2 text-sci-cyan" /> Augment Protocol Instructions
+          </h3>
+          <p className="text-slate-400 font-mono text-xs leading-relaxed">
+            Every simulation session allows for a <span className="text-sci-cyan font-bold">maximum of 4 active augments</span>. 
+            Augments are slotted automatically based on your active loadout in the Hangar. 
+            Characters provide base hulls, while Augments inject additional stat parameters (HP, ATK, LUCK) scaled by their Level and Rarity.
+          </p>
+        </div>
+        <div className="hidden lg:block border-l border-slate-800 pl-6 h-12">
+           <p className="text-[10px] text-slate-500 font-mono uppercase">Current Multiplier</p>
+           <p className="text-sci-cyan font-black text-xl">x1.25 MAX</p>
         </div>
       </div>
 
