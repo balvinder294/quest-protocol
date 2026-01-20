@@ -1,7 +1,11 @@
+
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../../context/ChainContext';
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
 import { ChevronLeft, Sword, Shield, Zap, Target, Cpu, RefreshCw, Trophy, AlertTriangle, User, Plus, Star, ArrowUp, Activity, ShieldAlert, Info, CheckCircle } from 'lucide-react';
-import { Link } from 'react-router-dom';
+
+const { Link } = RouterDOM;
 
 interface GameState {
   playerHP: number;
@@ -23,7 +27,7 @@ export const SpaceAttackGame: React.FC = () => {
   const [activeCharId, setActiveCharId] = useState<string | null>(null);
 
   // Added explicit type definition to handle optional elite property across character classes
-  const CLASSES: Record<string, { hp: number; atk: number; luck: number; icon: React.ReactNode; cost: number; elite?: string }> = {
+  const CLASSES: Record<string, { hp: number; atk: number; luck: number; icon: React.Node; cost: number; elite?: string }> = {
     TRAVELLER: { hp: 80, atk: 15, luck: 25, icon: <User className="text-slate-400" />, cost: 0, elite: 'PILOT' },
     CADET: { hp: 100, atk: 20, luck: 15, icon: <Sword className="text-sci-cyan" />, cost: 0, elite: 'COMMANDER' },
     ENGINEER: { hp: 120, atk: 12, luck: 10, icon: <Shield className="text-sci-purple" />, cost: 0, elite: 'CYBORG' },

@@ -1,7 +1,11 @@
+
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../../context/ChainContext';
 import { RefreshCw, ChevronLeft, Link as LinkIcon, Info, Target, Zap, Activity } from 'lucide-react';
-import { Link } from 'react-router-dom';
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
+
+const { Link } = RouterDOM;
 
 export const BlockLinkGame: React.FC = () => {
   const { addGameReward } = useChain();

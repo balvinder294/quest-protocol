@@ -57,6 +57,7 @@ export interface SnapshotMetadata {
 }
 
 export const ADMIN_USER = 'tekraze';
+export const ADMIN_PREFIX = '#';
 export const GENESIS_SUPPLY = 1_000_000;
 export const MAX_SUPPLY = 1_000_000_000;
 export const LOGIN_BONUS = 1000;

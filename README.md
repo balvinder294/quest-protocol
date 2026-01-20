@@ -51,6 +51,7 @@ For high-availability block production:
 ### 3. Standalone Witness Node (Local)
 - **Requirements**: Node.js v16+, `npm install ws sqlite3`.
 - **Run**: `WITNESS_NAME=yourusername node witness-node.js`.
+- **Default Port**: `8089`
 
 ---
 

@@ -11,7 +11,7 @@ import sqlite3 from 'sqlite3';
 import fs from 'fs';
 
 const CONFIG = {
-    PORT: 8080,
+    PORT: 8089,
     DB_PATH: './chain-data.db',
     WITNESS_NAME: process.env.WITNESS_NAME || 'tekraze',
     SIDECHAIN_ID: 'quest_protocol_v1'

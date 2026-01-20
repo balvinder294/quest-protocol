@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
-import { Link2, Cpu, ShieldCheck } from 'lucide-react';
+import { Link2, Cpu, ShieldCheck, AlertCircle } from 'lucide-react';
 
 export const Login: React.FC = () => {
   const { login, isLoading } = useChain();
@@ -45,10 +45,14 @@ export const Login: React.FC = () => {
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-700 text-white px-4 py-3 pl-10 rounded focus:outline-none focus:border-sci-cyan focus:ring-1 focus:ring-sci-cyan font-mono transition"
-                  placeholder="tekraze"
+                  placeholder="e.g. #tekraze (Admin) or username"
                   autoComplete="off"
                 />
                 <Cpu className="absolute left-3 top-3.5 w-4 h-4 text-slate-600" />
+              </div>
+              <div className="mt-2 flex items-start space-x-2 text-[10px] text-slate-500 font-mono">
+                <AlertCircle size={12} className="mt-0.5 flex-shrink-0" />
+                <p>Admin access requires prefixing your username with '#'. Standard users enter username normally.</p>
               </div>
             </div>
 

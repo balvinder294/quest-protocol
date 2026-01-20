@@ -1,8 +1,11 @@
+
 import React, { useRef, useEffect, useState } from 'react';
 import { useChain } from '../../context/ChainContext';
-// Add RefreshCw to the imports from lucide-react
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
 import { ChevronLeft, Crosshair, Shield, Zap, ArrowLeft, ArrowRight, MousePointer2, Info, Activity, Target, RefreshCw } from 'lucide-react';
-import { Link } from 'react-router-dom';
+
+const { Link } = RouterDOM;
 
 interface Particle {
   x: number;

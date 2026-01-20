@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../context/ChainContext';
 import { Cpu, Activity, ShieldCheck, Clock, Zap, Terminal, Server, Globe } from 'lucide-react';
@@ -79,6 +80,10 @@ export const NodeManager: React.FC = () => {
              <div className="flex justify-between">
                 <span className="text-slate-500">PEERS CONNECTED</span>
                 <span className="text-white">12</span>
+             </div>
+             <div className="flex justify-between">
+                <span className="text-slate-500">P2P_LISTENER_PORT</span>
+                <span className="text-sci-cyan">8089</span>
              </div>
              <div className="flex justify-between">
                 <span className="text-slate-500">LATEST_HASH</span>

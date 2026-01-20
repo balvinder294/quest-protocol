@@ -1,6 +1,7 @@
 
 import React from 'react';
-import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
 import { ChainProvider, useChain } from './context/ChainContext';
 import { Navbar } from './components/Navbar';
 import { Login } from './pages/Login';
@@ -20,6 +21,8 @@ import { BlockRunnerGame } from './pages/games/BlockRunnerGame';
 import { AlienHuntGame } from './pages/games/AlienHuntGame';
 import { SpaceAttackGame } from './pages/games/SpaceAttackGame';
 
+const { HashRouter, Routes, Route, Navigate } = RouterDOM;
+
 const ProtectedRoute: React.FC<{ children: React.ReactElement }> = ({ children }) => {
   const { user } = useChain();
   if (!user.username) {
@@ -32,7 +35,7 @@ const AppContent: React.FC = () => {
   const { user } = useChain();
 
   return (
-    <Router>
+    <HashRouter>
       <div className="min-h-screen bg-sci-bg text-slate-200 selection:bg-sci-cyan selection:text-black flex flex-col">
         <Navbar />
         <main className="flex-grow">
@@ -137,7 +140,7 @@ const AppContent: React.FC = () => {
           </div>
         </footer>
       </div>
-    </Router>
+    </HashRouter>
   );
 };
 

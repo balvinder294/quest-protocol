@@ -1,11 +1,14 @@
 
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
-import { NavLink } from 'react-router-dom';
-import { Hexagon, LayoutDashboard, Database, Gamepad2, ShieldAlert, LogOut, RefreshCw, Menu, X, Cpu, Box } from 'lucide-react';
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
+import { Hexagon, LayoutDashboard, Database, Gamepad2, ShieldAlert, LogOut, RefreshCw, Menu, X, Cpu, Box, Wifi, WifiOff } from 'lucide-react';
+
+const { NavLink } = RouterDOM;
 
 export const Navbar: React.FC = () => {
-  const { user, logout } = useChain();
+  const { user, logout, p2pStatus } = useChain();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   const navClass = ({ isActive }: { isActive: boolean }) => 
@@ -73,8 +76,18 @@ export const Navbar: React.FC = () => {
             </div>
           </div>
 
-          {/* User Status (Desktop) */}
+          {/* User Status & P2P (Desktop) */}
           <div className="hidden md:flex items-center space-x-4">
+            {/* P2P Status Indicator */}
+            <div className={`flex items-center px-2 py-1 rounded border text-[10px] font-bold font-mono transition-colors ${
+              p2pStatus === 'CONNECTED' ? 'bg-green-500/10 border-green-500 text-green-500' :
+              p2pStatus === 'CONNECTING' ? 'bg-yellow-500/10 border-yellow-500 text-yellow-500 animate-pulse' :
+              'bg-red-500/10 border-red-500 text-red-500'
+            }`}>
+              {p2pStatus === 'CONNECTED' ? <Wifi size={12} className="mr-1" /> : <WifiOff size={12} className="mr-1" />}
+              {p2pStatus}
+            </div>
+
             {user.username ? (
               <div className="flex items-center space-x-4 bg-slate-900 px-3 py-1.5 rounded border border-slate-700">
                 <div className="flex flex-col items-end">

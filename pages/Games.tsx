@@ -2,8 +2,11 @@
 import React from 'react';
 import { useChain } from '../context/ChainContext';
 import { Lock, Play, Bomb, Grid, Link as LinkIcon, Cpu, Layers, Scissors, Activity, Crosshair, Sword } from 'lucide-react';
-import { Link } from 'react-router-dom';
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
 import { GAME_PASS_COST } from '../types';
+
+const { Link } = RouterDOM;
 
 export const Games: React.FC = () => {
   const { user, buyGamePass } = useChain();

@@ -1,9 +1,12 @@
 
 import React, { useState, useRef } from 'react';
 import { useChain } from '../context/ChainContext';
-import { Navigate } from 'react-router-dom';
+// Use namespaced import to bypass potential named export resolution issues in the environment
+import * as RouterDOM from 'react-router-dom';
 import { ShieldAlert, Zap, Users, RefreshCw, Database, Download, Upload, Cpu } from 'lucide-react';
 import { ADMIN_USER } from '../types';
+
+const { Navigate } = RouterDOM;
 
 export const Admin: React.FC = () => {
   const { user, chain, mintTokens, mineBlock, sendTransaction, createSnapshot, restoreSnapshot } = useChain();
