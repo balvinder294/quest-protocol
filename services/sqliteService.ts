@@ -102,10 +102,20 @@ const runMigrations = (db: any) => {
     `);
 
     // 2. Dirty Migrations (Add columns to existing tables if they are missing)
+    // Users Table
+    try { db.run("ALTER TABLE users ADD COLUMN staked_balance INTEGER DEFAULT 0"); } catch (e) {}
+    try { db.run("ALTER TABLE users ADD COLUMN mana REAL DEFAULT 100.0"); } catch (e) {}
+    try { db.run("ALTER TABLE users ADD COLUMN last_mana_sync INTEGER DEFAULT 0"); } catch (e) {}
+    try { db.run("ALTER TABLE users ADD COLUMN has_pass BOOLEAN DEFAULT 0"); } catch (e) {}
+    try { db.run("ALTER TABLE users ADD COLUMN is_admin INTEGER DEFAULT 0"); } catch (e) {}
+    try { db.run("ALTER TABLE users ADD COLUMN last_node_activation INTEGER DEFAULT 0"); } catch (e) {}
+    
+    // Transactions Table
     try { db.run("ALTER TABLE transactions ADD COLUMN block_index INTEGER DEFAULT NULL"); } catch (e) {}
+    
+    // Blocks Table
     try { db.run("ALTER TABLE blocks ADD COLUMN merkle_root TEXT"); } catch (e) {}
     try { db.run("ALTER TABLE blocks ADD COLUMN chain_id TEXT"); } catch (e) {}
-    try { db.run("ALTER TABLE users ADD COLUMN last_node_activation INTEGER DEFAULT 0"); } catch (e) {}
 
     // 3. Ensure Genesis State
     db.run(`INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('tekraze', 1000000, 1, 1, 1000000);`);
