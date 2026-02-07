@@ -1,11 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../../context/ChainContext';
-import { RefreshCw, ChevronLeft, Link as LinkIcon, Info, Target, Zap, Activity } from 'lucide-react';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
-
-const { Link } = RouterDOM;
+import { RefreshCw, ChevronLeft, Info, Target, Zap, Activity } from 'lucide-react';
+// Fix: Use standard named import for Link
+import { Link } from 'react-router-dom';
 
 export const BlockLinkGame: React.FC = () => {
   const { addGameReward } = useChain();

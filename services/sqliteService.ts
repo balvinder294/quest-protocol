@@ -38,6 +38,9 @@ const runMigrations = (db: any) => {
       CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         balance INTEGER DEFAULT 0,
+        staked_balance INTEGER DEFAULT 0,
+        mana REAL DEFAULT 100.0,
+        last_mana_sync INTEGER DEFAULT 0,
         has_pass BOOLEAN DEFAULT 0,
         is_admin INTEGER DEFAULT 0,
         last_node_activation INTEGER DEFAULT 0
@@ -51,7 +54,8 @@ const runMigrations = (db: any) => {
         type TEXT,
         timestamp INTEGER,
         memo TEXT,
-        signature TEXT
+        signature TEXT,
+        block_index INTEGER DEFAULT NULL
       );
 
       CREATE TABLE IF NOT EXISTS blocks (
@@ -61,7 +65,10 @@ const runMigrations = (db: any) => {
         validator TEXT,
         timestamp INTEGER,
         tx_count INTEGER,
-        witness_sig TEXT
+        witness_sig TEXT,
+        block_data TEXT,
+        merkle_root TEXT,
+        chain_id TEXT
       );
 
       CREATE TABLE IF NOT EXISTS nfts (
@@ -75,12 +82,13 @@ const runMigrations = (db: any) => {
         xp INTEGER DEFAULT 0
       );
 
-      CREATE TABLE IF NOT EXISTS game_scores (
+      CREATE TABLE IF NOT EXISTS bets (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        game TEXT,
         username TEXT,
-        score INTEGER,
-        timestamp INTEGER
+        number INTEGER,
+        amount INTEGER,
+        timestamp INTEGER,
+        draw_id INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS witnesses (
@@ -89,8 +97,9 @@ const runMigrations = (db: any) => {
         active BOOLEAN DEFAULT 1
       );
 
-      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin) VALUES ('tekraze', 1000000, 1, 1);
-      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin) VALUES ('PROTOCOL_TREASURY', 0, 1, 1);
+      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('tekraze', 1000000, 1, 1, 1000000);
+      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('PROTOCOL_TREASURY', 0, 1, 1, 0);
+      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('QUEST_BURN_VOID', 0, 1, 1, 0);
       INSERT OR IGNORE INTO witnesses (username, votes, active) VALUES ('tekraze', 1000, 1);
     `);
     saveDB();
@@ -123,7 +132,7 @@ export const importSnapshot = async (data: Uint8Array) => {
   });
   dbInstance = new SQL.Database(data);
   saveDB();
-  window.location.reload(); // Refresh to re-init context with new state
+  window.location.reload(); 
 };
 
 export const getDb = () => dbInstance;

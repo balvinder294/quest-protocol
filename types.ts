@@ -4,7 +4,7 @@ export interface Transaction {
   to: string;
   amount: number;
   timestamp: number;
-  type: 'TRANSFER' | 'MINT' | 'REWARD' | 'FEE';
+  type: 'TRANSFER' | 'MINT' | 'REWARD' | 'FEE' | 'BURN' | 'STAKE' | 'UNSTAKE';
   memo?: string;
   signature?: string;
 }
@@ -12,8 +12,8 @@ export interface Transaction {
 export interface SimulationNFT {
   id: string;
   owner: string;
-  type: 'CHARACTER' | 'AUGMENT';
-  subType: 'TRAVELLER' | 'CADET' | 'ENGINEER' | 'PILOT' | 'COMMANDER' | 'CYBORG' | 'HEALTH' | 'ATTACK' | 'LUCK';
+  type: 'CHARACTER' | 'AUGMENT' | 'ACCESS';
+  subType: 'TRAVELLER' | 'CADET' | 'ENGINEER' | 'PILOT' | 'COMMANDER' | 'CYBORG' | 'HEALTH' | 'ATTACK' | 'LUCK' | 'NODE_PASS';
   value: number;
   rarity: 'COMMON' | 'RARE' | 'EPIC';
   level: number;
@@ -24,15 +24,21 @@ export interface Block {
   index: number;
   timestamp: number;
   transactions: Transaction[];
+  merkleRoot: string;
   previousHash: string;
   hash: string;
   validator: string;
+  chainId: string;
   witnessSignature?: string;
+  blurtAnchorId?: string; 
 }
 
 export interface UserState {
   username: string | null;
   balance: number;
+  stakedBalance: number;
+  mana: number;
+  maxMana: number;
   hasGamePass: boolean;
   isAdmin: boolean;
   inventory: SimulationNFT[];
@@ -43,23 +49,23 @@ export interface ChainState {
   blocks: Block[];
   pendingTransactions: Transaction[];
   totalSupply: number;
+  totalBurned: number;
   accounts: Record<string, number>;
   passes: Record<string, boolean>;
   witnesses: string[];
   currentWitness: string;
+  isSyncing: boolean;
 }
 
-export interface SnapshotMetadata {
-  blockHeight: number;
-  timestamp: number;
-  checksum: string;
-  version: string;
-}
-
-export const ADMIN_USER = 'tekraze';
+export const CHAIN_ID = 'quest_mainnet_v1';
+export const ADMIN_USER = 'tekraze'; // Genesis Anchor
+export const PROTOCOL_ID = 'quest_p_v1';
 export const ADMIN_PREFIX = '#';
 export const GENESIS_SUPPLY = 1_000_000;
 export const MAX_SUPPLY = 1_000_000_000;
 export const LOGIN_BONUS = 1000;
 export const GAME_PASS_COST = 500;
-export const PROTOCOL_VERSION = '1.2.0-BETA';
+export const NODE_PASS_COST = 1000;
+export const MANA_REGEN_HOURS = 24;
+export const PROTOCOL_VERSION = '1.6.0-DECENTRALIZED';
+export const BURN_ACCOUNT = 'QUEST_BURN_VOID';

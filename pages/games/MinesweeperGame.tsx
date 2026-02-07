@@ -2,10 +2,8 @@
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../../context/ChainContext';
 import { Bomb, RefreshCw, Flag, ChevronLeft, Trophy, Info, ShieldAlert, Cpu } from 'lucide-react';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
-
-const { Link } = RouterDOM;
+// Fix: Use standard named import for Link
+import { Link } from 'react-router-dom';
 
 export const MinesweeperGame: React.FC = () => {
   const { addGameReward } = useChain();
@@ -204,7 +202,6 @@ export const MinesweeperGame: React.FC = () => {
 
         {/* Game Area */}
         <div className="lg:col-span-3 flex justify-center bg-slate-900/30 border border-slate-800 p-8 rounded-xl shadow-inner relative overflow-hidden min-h-[500px]">
-          {/* Background decorative scanlines */}
           <div className="absolute inset-0 pointer-events-none opacity-5 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-0 bg-[length:100%_4px,3px_100%]"></div>
 
           {showRules && !win && !gameOver && (

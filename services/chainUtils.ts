@@ -13,3 +13,20 @@ export const simpleHash = (data: string): string => {
 export const generateId = (): string => {
   return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 };
+
+export const calculateMerkleRoot = (transactions: any[]): string => {
+  if (transactions.length === 0) return simpleHash('empty_block');
+  const txHashes = transactions.map(tx => simpleHash(JSON.stringify(tx)));
+  
+  let level = txHashes;
+  while (level.length > 1) {
+    const nextLevel = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const left = level[i];
+      const right = (i + 1 < level.length) ? level[i+1] : level[i];
+      nextLevel.push(simpleHash(left + right));
+    }
+    level = nextLevel;
+  }
+  return level[0];
+};

@@ -2,10 +2,8 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { useChain } from '../../context/ChainContext';
 import { ChevronLeft, RefreshCw, Activity, Info, Zap, ArrowLeft, ArrowRight, ShieldAlert } from 'lucide-react';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
-
-const { Link } = RouterDOM;
+// Fix: Use standard named import for Link
+import { Link } from 'react-router-dom';
 
 const GameInstance: React.FC<{ onGameOver: (score: number) => void }> = ({ onGameOver }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -182,7 +180,7 @@ export const BlockRunnerGame: React.FC = () => {
     <div className="max-w-6xl mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-8">
         <Link to="/games" className="flex items-center text-slate-400 hover:text-white transition group">
-          <ChevronLeft size={20} className="mr-1 group-hover:-translate-x-1 transition-transform" /> BACK TO DECK
+          <ChevronLeft size={20} className="mr-1 group-hover:-translate-x-1" /> BACK TO DECK
         </Link>
         <div className="flex flex-col items-center">
           <h1 className="text-2xl font-black font-sans text-sci-cyan tracking-widest uppercase">Cyber Run</h1>

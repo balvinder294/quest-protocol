@@ -1,11 +1,9 @@
-
 import React, { useRef, useEffect, useState } from 'react';
 import { useChain } from '../../context/ChainContext';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
-import { ChevronLeft, Crosshair, Shield, Zap, ArrowLeft, ArrowRight, MousePointer2, Info, Activity, Target, RefreshCw } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { ChevronLeft, Crosshair, Zap, ArrowLeft, ArrowRight, MousePointer2, Info, Target, RefreshCw, Shield, Lock, Keyboard } from 'lucide-react';
 
-const { Link } = RouterDOM;
+type Difficulty = 'NOOBIE' | 'CADET' | 'MAJOR';
 
 interface Particle {
   x: number;
@@ -14,6 +12,8 @@ interface Particle {
   vy: number;
   life: number;
   color: string;
+  size: number;
+  type: 'SPARK' | 'GLOW' | 'SMOKE';
 }
 
 interface Star {
@@ -21,6 +21,7 @@ interface Star {
   y: number;
   size: number;
   speed: number;
+  opacity: number;
 }
 
 interface Enemy {
@@ -32,6 +33,7 @@ interface Enemy {
   color: string;
   rotation: number;
   spikes: number;
+  pulse: number;
 }
 
 const AlienHuntInstance: React.FC<{ 
@@ -39,8 +41,9 @@ const AlienHuntInstance: React.FC<{
   health: number, 
   setHealth: (h: number) => void,
   externalMoveDir: 'LEFT' | 'RIGHT' | null,
-  externalFire: boolean
-}> = ({ onGameOver, health, setHealth, externalMoveDir, externalFire }) => {
+  externalFire: boolean,
+  difficulty: Difficulty
+}> = ({ onGameOver, health, setHealth, externalMoveDir, externalFire, difficulty }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef({
     playerX: 400,
@@ -54,7 +57,9 @@ const AlienHuntInstance: React.FC<{
     frameCount: 0,
     health: 100,
     lastFire: 0,
-    playerVelocity: 0
+    playerVelocity: 0,
+    screenShake: 0,
+    keys: {} as Record<string, boolean>
   });
 
   const ENEMY_COLORS = ['#22c55e', '#a855f7', '#f97316', '#eab308', '#06b6d4', '#f43f5e'];
@@ -68,67 +73,40 @@ const AlienHuntInstance: React.FC<{
     stateRef.current.stars = Array(150).fill(0).map(() => ({
       x: Math.random() * canvas.width,
       y: Math.random() * canvas.height,
-      size: Math.random() * 2,
-      speed: 1 + Math.random() * 3
+      size: Math.random() * 2 + 0.5,
+      speed: 0.5 + Math.random() * 4,
+      opacity: 0.2 + Math.random() * 0.8
     }));
 
     const spawnEnemy = () => {
       const state = stateRef.current;
-      const size = 30 + Math.random() * 30;
+      const size = 22 + Math.random() * 22;
+      const baseSpeed = difficulty === 'NOOBIE' ? 1.5 : difficulty === 'CADET' ? 2.5 : 4.5;
+      
       state.enemies.push({
         x: Math.random() * (canvas.width - 60) + 30,
         y: -60,
         size,
-        hp: Math.ceil(size / 10),
-        speed: 2 + Math.random() * 3.5 + (state.score * 0.0003),
+        hp: Math.ceil(size / (difficulty === 'MAJOR' ? 7 : 12)),
+        speed: baseSpeed + Math.random() * 2 + (state.score * 0.00005),
         color: ENEMY_COLORS[Math.floor(Math.random() * ENEMY_COLORS.length)],
-        rotation: 0,
-        spikes: 5 + Math.floor(Math.random() * 6)
+        rotation: Math.random() * Math.PI * 2,
+        spikes: 3 + Math.floor(Math.random() * 5),
+        pulse: 0
       });
     };
 
-    const drawSpikyStar = (cx: number, cy: number, spikes: number, outerRadius: number, innerRadius: number, color: string) => {
-      let rot = Math.PI / 2 * 3;
-      let x = cx;
-      let y = cy;
-      let step = Math.PI / spikes;
-
-      ctx.beginPath();
-      ctx.moveTo(cx, cy - outerRadius);
-      for (let i = 0; i < spikes; i++) {
-        x = cx + Math.cos(rot) * outerRadius;
-        y = cy + Math.sin(rot) * outerRadius;
-        ctx.lineTo(x, y);
-        rot += step;
-
-        x = cx + Math.cos(rot) * innerRadius;
-        y = cy + Math.sin(rot) * innerRadius;
-        ctx.lineTo(x, y);
-        rot += step;
-      }
-      ctx.lineTo(cx, cy - outerRadius);
-      ctx.closePath();
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = '#ffffff';
-      ctx.stroke();
-      ctx.fillStyle = color;
-      ctx.fill();
-      
-      // Add a center glow
-      ctx.beginPath();
-      ctx.arc(cx, cy, innerRadius/2, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(255,255,255,0.5)';
-      ctx.fill();
-    };
-
-    const createExplosion = (x: number, y: number, color: string, count = 15) => {
+    const createExplosion = (x: number, y: number, color: string, count = 20) => {
       for (let i = 0; i < count; i++) {
+        const typeRoll = Math.random();
         stateRef.current.particles.push({
           x, y,
-          vx: (Math.random() - 0.5) * 15,
-          vy: (Math.random() - 0.5) * 15,
+          vx: (Math.random() - 0.5) * 12,
+          vy: (Math.random() - 0.5) * 12,
           life: 1.0,
-          color
+          color,
+          size: Math.random() * 4 + 1,
+          type: typeRoll > 0.8 ? 'GLOW' : typeRoll > 0.4 ? 'SPARK' : 'SMOKE'
         });
       }
     };
@@ -136,133 +114,151 @@ const AlienHuntInstance: React.FC<{
     const fireLaser = () => {
       const state = stateRef.current;
       const now = Date.now();
-      if (now - state.lastFire < 110) return;
+      const fireRate = difficulty === 'MAJOR' ? 75 : 120;
+      if (now - state.lastFire < fireRate) return;
       state.lastFire = now;
-      state.muzzleFlash = 4;
-      state.projectiles.push({ x: state.playerX, y: canvas.height - 80, color: '#f43f5e' });
+      state.muzzleFlash = 5;
+      
+      if (difficulty === 'MAJOR') {
+        state.projectiles.push({ x: state.playerX - 20, y: canvas.height - 85, color: '#06b6d4' });
+        state.projectiles.push({ x: state.playerX + 20, y: canvas.height - 85, color: '#06b6d4' });
+      } else {
+        state.projectiles.push({ x: state.playerX, y: canvas.height - 90, color: '#06b6d4' });
+      }
     };
+
+    const handleKeyDown = (e: KeyboardEvent) => { stateRef.current.keys[e.key] = true; };
+    const handleKeyUp = (e: KeyboardEvent) => { stateRef.current.keys[e.key] = false; };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
 
     let animationId: number;
     const update = () => {
       const state = stateRef.current;
       if (state.gameOver) return;
 
-      if (externalMoveDir === 'LEFT') {
-        state.playerVelocity = -10;
-      } else if (externalMoveDir === 'RIGHT') {
-        state.playerVelocity = 10;
-      } else {
-        state.playerVelocity *= 0.85;
-      }
+      const isLeft = state.keys['ArrowLeft'] || state.keys['a'] || state.keys['A'] || externalMoveDir === 'LEFT';
+      const isRight = state.keys['ArrowRight'] || state.keys['d'] || state.keys['D'] || externalMoveDir === 'RIGHT';
+      const isFiring = state.keys[' '] || state.keys['Enter'] || externalFire;
+
+      if (isLeft) state.playerVelocity = -15;
+      else if (isRight) state.playerVelocity = 15;
+      else state.playerVelocity *= 0.8;
       
       state.playerX += state.playerVelocity;
-      state.playerX = Math.max(40, Math.min(canvas.width - 40, state.playerX));
+      state.playerX = Math.max(45, Math.min(canvas.width - 45, state.playerX));
 
-      if (externalFire) {
-        fireLaser();
-      }
+      if (isFiring) fireLaser();
 
       ctx.fillStyle = '#020617';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      ctx.fillStyle = '#ffffff';
       state.stars.forEach(s => {
         s.y += s.speed;
-        if (s.y > canvas.height) {
-          s.y = 0;
-          s.x = Math.random() * canvas.width;
-        }
-        ctx.globalAlpha = 0.6;
+        if (s.y > canvas.height) { s.y = 0; s.x = Math.random() * canvas.width; }
+        ctx.fillStyle = `rgba(255, 255, 255, ${s.opacity})`;
         ctx.beginPath();
-        ctx.arc(s.x, s.y, s.size, 0, Math.PI * 2);
+        ctx.rect(s.x, s.y, s.size, s.size * (1 + s.speed / 2));
         ctx.fill();
       });
-      ctx.globalAlpha = 1.0;
+
+      ctx.save();
+      if (state.screenShake > 0) {
+        ctx.translate((Math.random() - 0.5) * state.screenShake * 15, (Math.random() - 0.5) * state.screenShake * 15);
+        state.screenShake *= 0.85;
+      }
 
       for (let i = state.particles.length - 1; i >= 0; i--) {
         const p = state.particles[i];
-        p.x += p.vx;
-        p.y += p.vy;
-        p.life -= 0.03;
-        if (p.life <= 0) {
-          state.particles.splice(i, 1);
-          continue;
-        }
+        p.x += p.vx; p.y += p.vy;
+        p.life -= 0.02;
+        if (p.life <= 0) { state.particles.splice(i, 1); continue; }
         ctx.globalAlpha = p.life;
         ctx.fillStyle = p.color;
-        ctx.fillRect(p.x, p.y, 3, 3);
+        if (p.type === 'GLOW') {
+          ctx.shadowBlur = 15; ctx.shadowColor = p.color;
+          ctx.beginPath(); ctx.arc(p.x, p.y, p.size * 2.5, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+        } else {
+          ctx.fillRect(p.x, p.y, p.size, p.size);
+        }
       }
       ctx.globalAlpha = 1.0;
 
       const drawShip = (x: number, y: number) => {
         ctx.save();
         ctx.translate(x, y);
-        ctx.shadowBlur = 25;
-        ctx.shadowColor = '#06b6d4';
-        ctx.fillStyle = '#06b6d4';
-        ctx.beginPath();
-        ctx.moveTo(0, -40);
-        ctx.lineTo(-30, 15);
-        ctx.lineTo(30, 15);
-        ctx.closePath();
-        ctx.fill();
         
-        ctx.fillStyle = '#1e293b';
-        ctx.beginPath();
-        ctx.moveTo(0, -25);
-        ctx.lineTo(-20, 10);
-        ctx.lineTo(20, 10);
-        ctx.closePath();
-        ctx.fill();
+        const tPulse = Math.sin(state.frameCount * 0.5) * 6;
+        const grad = ctx.createLinearGradient(0, 20, 0, 40 + tPulse);
+        grad.addColorStop(0, '#06b6d4'); grad.addColorStop(1, 'transparent');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.ellipse(-15, 20, 7, 15 + tPulse, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(15, 20, 7, 15 + tPulse, 0, 0, Math.PI * 2); ctx.fill();
+
+        ctx.shadowBlur = 15; ctx.shadowColor = '#06b6d4';
+        ctx.fillStyle = '#1e293b'; ctx.strokeStyle = '#06b6d4'; ctx.lineWidth = 2;
+        
+        ctx.beginPath(); ctx.moveTo(-35, 10); ctx.lineTo(-10, -15); ctx.lineTo(10, -15); ctx.lineTo(35, 10); ctx.lineTo(30, 25); ctx.lineTo(-30, 25); ctx.closePath();
+        ctx.fill(); ctx.stroke();
+
+        ctx.fillStyle = '#06b6d4';
+        ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(-10, 5); ctx.lineTo(10, 5); ctx.closePath(); ctx.fill();
 
         if (state.muzzleFlash > 0) {
-          ctx.shadowColor = '#f43f5e';
-          ctx.fillStyle = '#f43f5e';
-          ctx.beginPath();
-          ctx.arc(0, -45, 20 * (state.muzzleFlash/4), 0, Math.PI*2);
-          ctx.fill();
+          ctx.fillStyle = '#fff'; ctx.shadowColor = '#06b6d4'; ctx.shadowBlur = 20;
+          ctx.beginPath(); ctx.arc(0, -40, 10 * (state.muzzleFlash / 5), 0, Math.PI * 2); ctx.fill();
           state.muzzleFlash--;
         }
         ctx.restore();
       };
-      drawShip(state.playerX, canvas.height - 60);
+      drawShip(state.playerX, canvas.height - 70);
 
       for (let i = state.projectiles.length - 1; i >= 0; i--) {
         const p = state.projectiles[i];
-        p.y -= 20;
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = p.color;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(p.x - 2, p.y, 4, 25);
-        ctx.shadowBlur = 0;
-        if (p.y < 0) state.projectiles.splice(i, 1);
+        p.y -= 25;
+        ctx.shadowBlur = 10; ctx.shadowColor = p.color;
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(p.x - 1.5, p.y, 3, 25);
+        if (p.y < -50) state.projectiles.splice(i, 1);
       }
 
       for (let i = state.enemies.length - 1; i >= 0; i--) {
         const e = state.enemies[i];
         e.y += e.speed;
-        e.rotation += 0.05;
+        e.rotation += 0.04;
+        e.pulse = Math.sin(state.frameCount * 0.1) * 3;
 
         ctx.save();
         ctx.translate(e.x, e.y);
         ctx.rotate(e.rotation);
-        ctx.shadowBlur = 20;
-        ctx.shadowColor = e.color;
-        drawSpikyStar(0, 0, e.spikes, e.size, e.size / 2.5, e.color);
+        ctx.shadowBlur = 15; ctx.shadowColor = e.color;
+        
+        ctx.beginPath();
+        const outer = e.size + e.pulse;
+        const inner = e.size / 2.5;
+        for (let j = 0; j < e.spikes * 2; j++) {
+          const r = j % 2 === 0 ? outer : inner;
+          const a = (j / (e.spikes * 2)) * Math.PI * 2;
+          ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+        }
+        ctx.closePath();
+        ctx.fillStyle = e.color; ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
+        
+        ctx.beginPath(); ctx.arc(0, 0, inner / 1.2, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill();
         ctx.restore();
 
         const dxP = e.x - state.playerX;
-        const dyP = e.y - (canvas.height - 60);
-        const distP = Math.sqrt(dxP*dxP + dyP*dyP);
-        if (distP < e.size + 20) {
-          state.health -= 20;
-          setHealth(state.health);
-          createExplosion(e.x, e.y, e.color, 40);
+        const dyP = e.y - (canvas.height - 70);
+        if (Math.sqrt(dxP*dxP + dyP*dyP) < e.size + 25) {
+          const dmg = difficulty === 'MAJOR' ? 40 : 25;
+          state.health -= dmg;
+          state.screenShake = 1.0;
+          setHealth(Math.max(0, state.health));
+          createExplosion(e.x, e.y, e.color, 35);
           state.enemies.splice(i, 1);
-          if (state.health <= 0) {
-             state.gameOver = true;
-             onGameOver(state.score);
-          }
+          if (state.health <= 0) { state.gameOver = true; onGameOver(state.score); }
           continue;
         }
 
@@ -270,15 +266,14 @@ const AlienHuntInstance: React.FC<{
           const p = state.projectiles[j];
           const dxL = p.x - e.x;
           const dyL = p.y - e.y;
-          const distL = Math.sqrt(dxL*dxL + dyL*dyL);
-          if (distL < e.size + 8) {
+          if (Math.sqrt(dxL*dxL + dyL*dyL) < e.size + 10) {
             e.hp--;
-            createExplosion(p.x, p.y, '#ffffff', 6);
+            createExplosion(p.x, p.y, '#fff', 5);
             state.projectiles.splice(j, 1);
             if (e.hp <= 0) {
-              createExplosion(e.x, e.y, e.color, 30);
+              createExplosion(e.x, e.y, e.color, 25);
               state.enemies.splice(i, 1);
-              state.score += 200;
+              state.score += difficulty === 'MAJOR' ? 500 : difficulty === 'CADET' ? 200 : 100;
               break;
             }
           }
@@ -286,70 +281,62 @@ const AlienHuntInstance: React.FC<{
 
         if (e.y > canvas.height + 60) {
           state.health -= 10;
-          setHealth(state.health);
+          setHealth(Math.max(0, state.health));
           state.enemies.splice(i, 1);
-          if (state.health <= 0) {
-             state.gameOver = true;
-             onGameOver(state.score);
-          }
+          if (state.health <= 0) { state.gameOver = true; onGameOver(state.score); }
         }
       }
 
       state.frameCount++;
-      if (state.frameCount % Math.max(10, 50 - Math.floor(state.score / 3000)) === 0) spawnEnemy();
+      const spawnThresh = difficulty === 'MAJOR' ? 20 : difficulty === 'CADET' ? 45 : 75;
+      if (state.frameCount % Math.max(10, spawnThresh - Math.floor(state.score / 10000)) === 0) spawnEnemy();
 
+      ctx.restore();
       animationId = requestAnimationFrame(update);
     };
 
     update();
-    return () => cancelAnimationFrame(animationId);
-  }, [onGameOver, setHealth, externalMoveDir, externalFire]);
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (rect) {
-      const scaleX = canvasRef.current!.width / rect.width;
-      stateRef.current.playerX = (e.clientX - rect.left) * scaleX;
-    }
-  };
-
-  const handleClick = () => {
-    if (stateRef.current.gameOver) return;
-    const now = Date.now();
-    if (now - stateRef.current.lastFire < 110) return;
-    stateRef.current.lastFire = now;
-    stateRef.current.muzzleFlash = 4;
-    stateRef.current.projectiles.push({ x: stateRef.current.playerX, y: canvasRef.current!.height - 80, color: '#f43f5e' });
-  };
+    return () => {
+      cancelAnimationFrame(animationId);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [onGameOver, setHealth, externalMoveDir, externalFire, difficulty]);
 
   return (
     <canvas
       ref={canvasRef}
       width={800}
       height={900}
-      className="bg-slate-950 max-w-full rounded-xl shadow-[0_0_80px_rgba(0,0,0,0.8)] cursor-none border-2 border-slate-800"
-      onMouseMove={handleMouseMove}
-      onClick={handleClick}
+      className="bg-slate-950 max-w-full rounded-xl shadow-2xl cursor-none border-2 border-slate-800 touch-none"
+      onMouseMove={(e) => {
+        const rect = canvasRef.current?.getBoundingClientRect();
+        if (rect) {
+          const scaleX = canvasRef.current!.width / rect.width;
+          stateRef.current.playerX = (e.clientX - rect.left) * scaleX;
+        }
+      }}
     />
   );
 };
 
 export const AlienHuntGame: React.FC = () => {
   const { addGameReward } = useChain();
+  const [difficulty, setDifficulty] = useState<Difficulty>('CADET');
   const [score, setScore] = useState(0);
   const [health, setHealth] = useState(100);
   const [gameOver, setGameOver] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false);
   const [gameKey, setGameKey] = useState(0);
   
   const [moveDir, setMoveDir] = useState<'LEFT' | 'RIGHT' | null>(null);
   const [extFire, setExtFire] = useState(false);
 
-  const resetGame = () => {
+  const startDeployment = () => {
     setGameOver(false);
     setScore(0);
     setHealth(100);
-    setMoveDir(null);
-    setExtFire(false);
+    setGameStarted(true);
     setGameKey(prev => prev + 1);
   };
 
@@ -357,135 +344,119 @@ export const AlienHuntGame: React.FC = () => {
     <div className="max-w-6xl mx-auto px-4 py-8">
       <div className="flex items-center justify-between mb-8">
         <Link to="/games" className="flex items-center text-slate-400 hover:text-white transition group">
-          <ChevronLeft size={20} className="mr-1 group-hover:-translate-x-1 transition-transform" /> BACK TO DECK
+          <ChevronLeft size={20} className="mr-1 group-hover:-translate-x-1" /> BACK TO DECK
         </Link>
         <div className="flex flex-col items-center">
-          <h1 className="text-2xl font-black font-sans text-sci-cyan tracking-widest uppercase">Void Defender</h1>
+          <h1 className="text-2xl font-black text-sci-cyan tracking-widest uppercase">Void Defender</h1>
           <div className="h-0.5 w-32 bg-gradient-to-r from-transparent via-sci-cyan to-transparent"></div>
         </div>
         <div className="w-20"></div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-        {/* Sidebar Controls */}
         <div className="lg:col-span-1 space-y-6">
           <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 backdrop-blur-md">
-            <h3 className="text-[10px] font-mono text-slate-500 uppercase tracking-widest mb-4">Tactical Data</h3>
+            <div className="flex justify-between items-center mb-4">
+              <h3 className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Tactical Data</h3>
+              {gameStarted && <div className="text-orange-500 text-[8px] font-black animate-pulse flex items-center"><Lock size={8} className="mr-1" /> LOCKED</div>}
+            </div>
             
             <div className="space-y-4">
               <div className="bg-slate-950 p-4 rounded border border-slate-800">
-                <p className="text-[10px] font-mono text-sci-cyan mb-1 flex items-center">
-                  <Shield size={10} className="mr-1" /> HULL_INTEGRITY
+                <p className="text-[10px] font-mono text-sci-cyan mb-1 uppercase tracking-widest flex items-center">
+                  <Shield size={10} className="mr-1" /> Integrity
                 </p>
-                <div className="w-full h-3 bg-slate-800 rounded-full overflow-hidden border border-slate-700 mt-1">
-                  <div 
-                    className={`h-full transition-all duration-500 ${health > 50 ? 'bg-sci-cyan' : health > 20 ? 'bg-yellow-500' : 'bg-red-500'}`} 
-                    style={{ width: `${health}%` }}
-                  ></div>
+                <div className="w-full h-3 bg-slate-800 rounded-full overflow-hidden mt-1 border border-slate-700">
+                  <div className={`h-full transition-all duration-500 ${health > 50 ? 'bg-sci-cyan' : 'bg-red-500'}`} style={{ width: `${health}%` }}></div>
+                </div>
+              </div>
+
+              <div className={`bg-slate-950 p-4 rounded border ${gameStarted ? 'border-orange-500/20 opacity-50 pointer-events-none' : 'border-slate-800'}`}>
+                <p className="text-[10px] font-mono text-slate-500 mb-1">DEFENSE_CADRE</p>
+                <div className="flex bg-slate-900 p-1 rounded-lg">
+                  {(['NOOBIE', 'CADET', 'MAJOR'] as Difficulty[]).map(d => (
+                    <button
+                      key={d}
+                      onClick={() => setDifficulty(d)}
+                      className={`flex-1 py-1 text-[8px] font-black rounded uppercase transition ${difficulty === d ? 'bg-sci-cyan text-slate-950' : 'text-slate-500'}`}
+                    >
+                      {d}
+                    </button>
+                  ))}
                 </div>
               </div>
 
               <div className="bg-slate-950 p-4 rounded border border-slate-800">
-                <p className="text-[10px] font-mono text-slate-500 mb-1 flex items-center">
-                  <Target size={10} className="mr-1" /> BOUNTY_CREDITS
-                </p>
-                <div className="text-2xl font-black font-mono text-white tracking-tighter leading-none">{score.toLocaleString()}</div>
+                <p className="text-[10px] font-mono text-slate-500 mb-1 uppercase tracking-widest">Bounty Credits</p>
+                <div className="text-2xl font-black font-mono text-white tracking-tighter">{score.toLocaleString()}</div>
               </div>
             </div>
-
-            <button 
-              onClick={resetGame}
-              className="w-full mt-6 bg-slate-800 hover:bg-slate-700 text-white font-black py-4 rounded uppercase tracking-widest transition-all border border-slate-700 text-xs flex items-center justify-center shadow-[0_0_15px_rgba(0,0,0,0.3)]"
-            >
-              <RefreshCw size={14} className="mr-2" /> Reboot_Drone
-            </button>
+            
+            {gameStarted && (
+              <button onClick={() => {setGameStarted(false); setGameOver(false);}} className="w-full mt-6 bg-red-950/20 text-red-500 border border-red-500/30 py-3 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-red-500 hover:text-white transition-all">
+                Abort Mission
+              </button>
+            )}
           </div>
 
           <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6 backdrop-blur-md">
-            <h3 className="text-[10px] font-mono text-sci-cyan uppercase tracking-widest mb-4 flex items-center">
-              <Info size={12} className="mr-2" /> ENGAGEMENT PROTOCOLS
-            </h3>
-            <ul className="space-y-3 text-[11px] font-mono text-slate-400">
-              <li className="flex items-start">
-                <span className="text-sci-cyan mr-2">01.</span> Use cursor to guide the defense drone. Tap to fire lasers.
-              </li>
-              <li className="flex items-start">
-                <span className="text-sci-cyan mr-2">02.</span> Neutralize spiky <span className="text-sci-cyan font-bold">VOID ENTITIES</span> for bounty rewards.
-              </li>
-              <li className="flex items-start">
-                <span className="text-sci-cyan mr-2">03.</span> Entities that breach the perimeter will drain hull integrity.
-              </li>
-              <li className="flex items-start">
-                <span className="text-sci-cyan mr-2">04.</span> Reward: Earn 1 QUEST for every 50 bounty points processed.
-              </li>
-            </ul>
+            <h3 className="text-[10px] font-mono text-sci-cyan uppercase tracking-widest mb-4 flex items-center"><Keyboard size={12} className="mr-2" /> COMMANDS</h3>
+            <div className="space-y-3 text-[10px] font-mono text-slate-500">
+              <div className="flex justify-between"><span>MOVE</span><span className="text-white">WASD / ARROWS</span></div>
+              <div className="flex justify-between"><span>FIRE</span><span className="text-white">SPACE / TAP</span></div>
+              <div className="flex justify-between"><span>BOUNTY</span><span className="text-white">1 Q / 50 PTS</span></div>
+            </div>
           </div>
         </div>
 
-        {/* Game Area */}
-        <div className="lg:col-span-3 flex flex-col items-center bg-slate-900/30 border border-slate-800 p-8 rounded-xl shadow-inner relative min-h-[600px]">
-          <div className="absolute inset-0 pointer-events-none opacity-5 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-0 bg-[length:100%_4px,3px_100%]"></div>
-          
-          <div className="relative rounded-xl overflow-hidden border-4 border-slate-800 shadow-[0_0_100px_rgba(0,0,0,0.7)] bg-slate-950">
+        <div className="lg:col-span-3 flex flex-col items-center bg-slate-900/30 border border-slate-800 p-8 rounded-xl relative min-h-[600px]">
+          <div className="relative rounded-xl overflow-hidden border-4 border-slate-800 bg-slate-950 w-full flex items-center justify-center min-h-[500px]">
+            {!gameStarted && !gameOver && (
+              <div className="absolute inset-0 z-20 bg-slate-950/95 flex flex-col items-center justify-center p-12 text-center backdrop-blur-md">
+                 <Crosshair size={80} className="text-sci-cyan mb-8 animate-pulse-slow" />
+                 <h2 className="text-4xl font-black text-white mb-4 uppercase tracking-tighter">Pre-Flight Check</h2>
+                 <p className="text-slate-400 mb-10 font-mono text-sm max-w-sm">Select Rank to calibrate drone systems. Deployment locks parameters for the mission duration.</p>
+                 <div className="grid grid-cols-3 gap-4 w-full max-w-md mb-12">
+                    {(['NOOBIE', 'CADET', 'MAJOR'] as Difficulty[]).map(d => (
+                      <button key={d} onClick={() => setDifficulty(d)} className={`p-4 rounded-xl border-2 font-black text-[10px] tracking-widest transition-all ${difficulty === d ? 'bg-sci-cyan border-white text-slate-900 scale-105' : 'bg-slate-900 border-slate-700 text-slate-500'}`}>{d}</button>
+                    ))}
+                 </div>
+                 <button onClick={startDeployment} className="bg-white text-slate-950 font-black px-16 py-6 rounded-full uppercase tracking-widest transition-all hover:bg-sci-cyan active:scale-95 shadow-[0_0_40px_rgba(255,255,255,0.1)] text-xl flex items-center"><Zap size={24} className="mr-3 fill-current" /> Deploy Drone</button>
+              </div>
+            )}
+
             {gameOver && (
               <div className="absolute inset-0 z-20 bg-slate-950/95 flex flex-col items-center justify-center p-8 text-center animate-in zoom-in duration-300 backdrop-blur-md">
-                <Crosshair size={80} className="text-red-500 mb-6 animate-pulse" />
+                <Target size={80} className="text-red-500 mb-6 animate-pulse" />
                 <h2 className="text-6xl font-black text-white mb-2 uppercase tracking-tighter">Drone Offline</h2>
-                <p className="text-slate-400 mb-12 font-mono text-xl tracking-widest">Total Bounty Processed: {score}</p>
-                <button 
-                  onClick={resetGame} 
-                  className="bg-sci-cyan text-slate-950 font-black px-16 py-6 rounded uppercase tracking-widest transition-all hover:bg-white active:scale-95 shadow-[0_0_30px_rgba(6,182,212,0.5)] text-lg"
-                >
-                  Re-Deploy Drone
-                </button>
+                <p className="text-slate-400 mb-12 font-mono text-xl uppercase">Total Bounty: {score}</p>
+                <div className="flex gap-4">
+                  <button onClick={startDeployment} className="bg-sci-cyan text-slate-950 font-black px-12 py-5 rounded-full uppercase tracking-widest transition-all shadow-lg text-lg flex items-center justify-center"><RefreshCw size={24} className="mr-3" /> Re-Deploy</button>
+                  <button onClick={() => { setGameOver(false); setGameStarted(false); }} className="bg-slate-800 text-white font-black px-12 py-5 rounded-full uppercase tracking-widest hover:bg-slate-700 text-lg">Hangar</button>
+                </div>
               </div>
             )}
             
-            <AlienHuntInstance 
-              key={gameKey} 
-              health={health}
-              setHealth={setHealth}
-              externalMoveDir={moveDir}
-              externalFire={extFire}
-              onGameOver={(finalScore) => {
-                setScore(finalScore);
-                setGameOver(true);
-                if (finalScore >= 500) addGameReward(finalScore / 50, 'Void Defender');
-              }} 
-            />
+            {gameStarted && (
+              <AlienHuntInstance 
+                key={gameKey} 
+                health={health} setHealth={setHealth}
+                externalMoveDir={moveDir} externalFire={extFire}
+                difficulty={difficulty}
+                onGameOver={(f) => { setScore(f); setGameOver(true); setGameStarted(false); if (f >= 500) addGameReward(f / 50, 'Void Defender'); }} 
+              />
+            )}
           </div>
 
-          <div className="w-full grid grid-cols-4 gap-4 md:hidden mt-8 relative z-10">
-            <button 
-              onPointerDown={(e) => { e.preventDefault(); setMoveDir('LEFT'); }}
-              onPointerUp={(e) => { e.preventDefault(); setMoveDir(null); }}
-              onPointerLeave={(e) => { e.preventDefault(); setMoveDir(null); }}
-              className="col-span-1 bg-slate-900 border border-slate-700 p-8 rounded-2xl active:bg-sci-cyan active:text-slate-950 flex justify-center items-center touch-none shadow-lg"
-            >
-              <ArrowLeft size={40} />
-            </button>
-            
-            <button 
-              onPointerDown={(e) => { e.preventDefault(); setExtFire(true); }}
-              onPointerUp={(e) => { e.preventDefault(); setExtFire(false); }}
-              className="col-span-2 bg-red-950/20 border-2 border-red-500 text-red-500 p-8 rounded-2xl active:bg-red-500 active:text-white flex justify-center items-center touch-none shadow-[0_0_20px_rgba(239,68,68,0.3)] font-black text-xl"
-            >
-              <Zap size={32} fill="currentColor" className="mr-2" /> FIRE
-            </button>
-
-            <button 
-              onPointerDown={(e) => { e.preventDefault(); setMoveDir('RIGHT'); }}
-              onPointerUp={(e) => { e.preventDefault(); setMoveDir(null); }}
-              onPointerLeave={(e) => { e.preventDefault(); setMoveDir(null); }}
-              className="col-span-1 bg-slate-900 border border-slate-700 p-8 rounded-2xl active:bg-sci-cyan active:text-slate-950 flex justify-center items-center touch-none shadow-lg"
-            >
-              <ArrowRight size={40} />
-            </button>
+          <div className="w-full grid grid-cols-4 gap-4 lg:hidden mt-8 relative z-10">
+            <button onPointerDown={(e) => { e.preventDefault(); setMoveDir('LEFT'); }} onPointerUp={(e) => { e.preventDefault(); setMoveDir(null); }} onPointerLeave={(e) => { e.preventDefault(); setMoveDir(null); }} className={`col-span-1 bg-slate-900 border-2 border-slate-700 p-8 rounded-2xl active:bg-sci-cyan active:text-slate-950 flex justify-center items-center touch-none transition-all ${!gameStarted ? 'opacity-20' : ''}`} disabled={!gameStarted}><ArrowLeft size={48} /></button>
+            <button onPointerDown={(e) => { e.preventDefault(); setExtFire(true); }} onPointerUp={(e) => { e.preventDefault(); setExtFire(false); }} onPointerLeave={(e) => { e.preventDefault(); setExtFire(false); }} className={`col-span-2 bg-red-950/20 border-2 border-red-500 text-red-500 p-8 rounded-2xl active:bg-red-500 active:text-white flex justify-center items-center touch-none font-black text-2xl transition-all ${!gameStarted ? 'opacity-20' : ''}`} disabled={!gameStarted}><Zap size={36} fill="currentColor" className="mr-2" /> DISCHARGE</button>
+            <button onPointerDown={(e) => { e.preventDefault(); setMoveDir('RIGHT'); }} onPointerUp={(e) => { e.preventDefault(); setMoveDir(null); }} onPointerLeave={(e) => { e.preventDefault(); setMoveDir(null); }} className={`col-span-1 bg-slate-900 border-2 border-slate-700 p-8 rounded-2xl active:bg-sci-cyan active:text-slate-950 flex justify-center items-center touch-none transition-all ${!gameStarted ? 'opacity-20' : ''}`} disabled={!gameStarted}><ArrowRight size={48} /></button>
           </div>
           
           <div className="hidden lg:flex items-center space-x-3 text-slate-500 text-[10px] font-mono bg-slate-900/50 px-6 py-3 rounded-full border border-slate-800 mt-8 relative z-10">
              <MousePointer2 size={12} className="text-sci-cyan" />
-             <span>Move cursor to guide defense drone. Tap to discharge lasers. Clear the entities to protect the perimeter.</span>
+             <span>Mouse or Keyboard [WASD] to guide drone. Space to discharge. Clear entities to protect integrity.</span>
           </div>
         </div>
       </div>

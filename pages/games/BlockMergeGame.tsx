@@ -1,11 +1,9 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useChain } from '../../context/ChainContext';
-import { Grid, RefreshCw, ChevronLeft, Trophy, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Info, Layers, Zap } from 'lucide-react';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
-
-const { Link } = RouterDOM;
+import { Grid, RefreshCw, ChevronLeft, Trophy, Info, Layers, Zap } from 'lucide-react';
+// Fix: Use standard named import for Link
+import { Link } from 'react-router-dom';
 
 export const BlockMergeGame: React.FC = () => {
   const { addGameReward } = useChain();
@@ -216,7 +214,7 @@ export const BlockMergeGame: React.FC = () => {
         {/* Board Area */}
         <div className="lg:col-span-3 flex justify-center items-center bg-slate-900/30 border border-slate-800 p-8 rounded-xl shadow-inner relative min-h-[500px]">
           {gameOver && (
-            <div className="absolute inset-0 z-20 bg-slate-950/90 flex flex-col items-center justify-center rounded-xl backdrop-blur-md animate-in fade-in duration-500">
+            <div className="absolute inset-0 z-20 bg-slate-950/95 flex flex-col items-center justify-center rounded-xl backdrop-blur-md animate-in fade-in duration-500">
                <h2 className="text-5xl font-black text-red-500 mb-2 uppercase tracking-tighter">Chain Halted</h2>
                <p className="text-slate-400 mb-10 font-mono">Consensus impossible. Buffer overflow.</p>
                <button 

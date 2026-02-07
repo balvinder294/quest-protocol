@@ -1,11 +1,11 @@
 
 import React, { useRef, useEffect, useState } from 'react';
 import { useChain } from '../../context/ChainContext';
-import { ChevronLeft, RefreshCw, Scissors, Info, Activity, ShieldAlert, Cpu, Zap } from 'lucide-react';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
+import { ChevronLeft, RefreshCw, Info, Activity, ShieldAlert, Cpu, Zap } from 'lucide-react';
+// Fix: Use standard named import for Link
+import { Link } from 'react-router-dom';
 
-const { Link } = RouterDOM;
+type Difficulty = 'NOOBIE' | 'CADET' | 'MAJOR';
 
 interface Entity {
   id: number;
@@ -19,7 +19,7 @@ interface Entity {
   sliced: boolean;
 }
 
-const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameReward: any }> = ({ onGameOver, addGameReward }) => {
+const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameReward: any, difficulty: Difficulty }> = ({ onGameOver, addGameReward, difficulty }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const entitiesRef = useRef<Entity[]>([]);
   const scoreRef = useRef(0);
@@ -39,8 +39,11 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
     if (!ctx) return;
 
     let animationId: number;
-    let spawnRate = 60;
+    let baseSpawnRate = difficulty === 'NOOBIE' ? 90 : difficulty === 'CADET' ? 60 : 40;
+    let spawnRate = baseSpawnRate;
     let frameCount = 0;
+    let gravity = difficulty === 'NOOBIE' ? 0.15 : difficulty === 'CADET' ? 0.22 : 0.32;
+    let jumpForce = difficulty === 'NOOBIE' ? -(Math.random() * 4 + 10) : difficulty === 'CADET' ? -(Math.random() * 6 + 12) : -(Math.random() * 8 + 15);
 
     const spawnEntity = () => {
       const type = Math.random() > 0.85 ? 'VIRUS' : 'DATA';
@@ -48,7 +51,7 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
       const x = Math.random() * (canvas.width - 100) + 50;
       const y = canvas.height + radius;
       const vx = (canvas.width / 2 - x) * 0.01 + (Math.random() - 0.5) * 4;
-      const vy = -(Math.random() * 6 + 12); 
+      const vy = jumpForce; 
 
       entitiesRef.current.push({
         id: Math.random(),
@@ -133,7 +136,7 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
         let e = entitiesRef.current[i];
         e.x += e.vx;
         e.y += e.vy;
-        e.vy += 0.22;
+        e.vy += gravity;
 
         if (!e.sliced && isMouseDown.current && trailRef.current.length > 1) {
             const dx = mousePos.current.x - e.x;
@@ -142,9 +145,10 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
                 e.sliced = true;
                 createSparks(e.x, e.y, e.color);
                 if (e.type === 'DATA') {
-                    scoreRef.current += 10;
+                    const bonus = difficulty === 'MAJOR' ? 20 : difficulty === 'CADET' ? 10 : 5;
+                    scoreRef.current += bonus;
                     setLocalScore(scoreRef.current);
-                    if (scoreRef.current % 100 === 0) addGameReward(10, 'Data Slicer');
+                    if (scoreRef.current % 100 === 0) addGameReward(difficulty === 'MAJOR' ? 20 : 10, 'Data Slicer');
                 } else {
                     livesRef.current -= 1;
                     setLocalLives(livesRef.current);
@@ -203,7 +207,7 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
       frameCount++;
       if (frameCount % spawnRate === 0) {
         spawnEntity();
-        if (spawnRate > 18) spawnRate--;
+        if (spawnRate > (difficulty === 'MAJOR' ? 12 : difficulty === 'CADET' ? 18 : 30)) spawnRate--;
       }
 
       animationId = requestAnimationFrame(update);
@@ -211,7 +215,7 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
 
     update();
     return () => cancelAnimationFrame(animationId);
-  }, [onGameOver, addGameReward]);
+  }, [onGameOver, addGameReward, difficulty]);
 
   const updatePos = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -259,6 +263,7 @@ const GameInstance: React.FC<{ onGameOver: (score: number) => void, addGameRewar
 
 export const FruitSlasherGame: React.FC = () => {
   const { addGameReward } = useChain();
+  const [difficulty, setDifficulty] = useState<Difficulty>('CADET');
   const [gameOver, setGameOver] = useState(false);
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(3);
@@ -295,6 +300,21 @@ export const FruitSlasherGame: React.FC = () => {
                 <p className="text-[10px] font-mono text-sci-cyan mb-1">PROCESSED_DATA</p>
                 <div className="text-3xl font-black font-mono text-white tracking-tighter">{score}</div>
               </div>
+
+              <div className="bg-slate-950 p-3 rounded border border-slate-800">
+                <p className="text-[10px] font-mono text-slate-500 mb-1">UPLINK_LEVEL</p>
+                <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800 mt-1">
+                  {(['NOOBIE', 'CADET', 'MAJOR'] as Difficulty[]).map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => { setDifficulty(d); resetGame(); }}
+                      className={`flex-1 py-1 text-[8px] font-black uppercase rounded transition ${difficulty === d ? 'bg-sci-cyan text-slate-950 shadow-sm' : 'text-slate-500 hover:text-white'}`}
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              </div>
               
               <div className="bg-slate-950 p-3 rounded border border-slate-800">
                 <p className="text-[10px] font-mono text-slate-500 mb-1">INTEGRITY_SHIELD</p>
@@ -326,7 +346,7 @@ export const FruitSlasherGame: React.FC = () => {
                 <span className="mr-2">02.</span> Avoid red <span className="font-bold">VIRUS ERRORS</span>. Three hits will sever the connection.
               </li>
               <li className="flex items-start">
-                <span className="text-sci-cyan mr-2">03.</span> Earn 10 QUEST for every 100 processing points.
+                <span className="text-sci-cyan mr-2">03.</span> <span className="text-white font-bold">MAJOR</span> level grants double points but moves with high velocity.
               </li>
               <li className="flex items-start">
                 <span className="text-sci-cyan mr-2">04.</span> Use mouse or touch to drag and slice in rapid motions.
@@ -354,6 +374,7 @@ export const FruitSlasherGame: React.FC = () => {
             key={gameKey} 
             onGameOver={(s) => { setScore(s); setGameOver(true); }} 
             addGameReward={addGameReward} 
+            difficulty={difficulty}
           />
         </div>
       </div>

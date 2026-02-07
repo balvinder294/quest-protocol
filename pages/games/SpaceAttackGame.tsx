@@ -1,11 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../../context/ChainContext';
-// Use namespaced import to bypass potential named export resolution issues in the environment
-import * as RouterDOM from 'react-router-dom';
+// Fix: Use standard named import for Link
+import { Link } from 'react-router-dom';
 import { ChevronLeft, Sword, Shield, Zap, Target, Cpu, RefreshCw, Trophy, AlertTriangle, User, Plus, Star, ArrowUp, Activity, ShieldAlert, Info, CheckCircle } from 'lucide-react';
-
-const { Link } = RouterDOM;
 
 interface GameState {
   playerHP: number;
@@ -26,8 +24,7 @@ export const SpaceAttackGame: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'SIMULATION' | 'HANGAR'>('SIMULATION');
   const [activeCharId, setActiveCharId] = useState<string | null>(null);
 
-  // Added explicit type definition to handle optional elite property across character classes
-  const CLASSES: Record<string, { hp: number; atk: number; luck: number; icon: React.Node; cost: number; elite?: string }> = {
+  const CLASSES: Record<string, { hp: number; atk: number; luck: number; icon: React.ReactNode; cost: number; elite?: string }> = {
     TRAVELLER: { hp: 80, atk: 15, luck: 25, icon: <User className="text-slate-400" />, cost: 0, elite: 'PILOT' },
     CADET: { hp: 100, atk: 20, luck: 15, icon: <Sword className="text-sci-cyan" />, cost: 0, elite: 'COMMANDER' },
     ENGINEER: { hp: 120, atk: 12, luck: 10, icon: <Shield className="text-sci-purple" />, cost: 0, elite: 'CYBORG' },
@@ -36,7 +33,6 @@ export const SpaceAttackGame: React.FC = () => {
     CYBORG: { hp: 160, atk: 25, luck: 5, icon: <Cpu className="text-green-500" />, cost: 1500 }
   };
 
-  // Auto-select first character if none selected
   useEffect(() => {
     if (!activeCharId && user.inventory.some(i => i.type === 'CHARACTER')) {
       const firstChar = user.inventory.find(i => i.type === 'CHARACTER');
@@ -51,14 +47,13 @@ export const SpaceAttackGame: React.FC = () => {
     if (!currentCharacter) return;
     const charData = CLASSES[currentCharacter.subType as keyof typeof CLASSES];
     
-    // Scale stats by level
     const levelScale = 1 + (currentCharacter.level - 1) * 0.1;
     const extraHP = augments.filter(a => a.subType === 'HEALTH').reduce((s, a) => s + (a.value * (1 + (a.level - 1) * 0.05)), 0);
     const extraAtk = augments.filter(a => a.subType === 'ATTACK').reduce((s, a) => s + (a.value * (1 + (a.level - 1) * 0.05)), 0);
     const extraLuck = augments.filter(a => a.subType === 'LUCK').reduce((s, a) => s + (a.value * (1 + (a.level - 1) * 0.05)), 0);
 
     const playerMaxHP = Math.floor((charData.hp * levelScale) + extraHP);
-    const botMaxHP = 150 + (currentCharacter.level * 20); // Scale bot diff
+    const botMaxHP = 150 + (currentCharacter.level * 20);
 
     setGameState({
       playerHP: playerMaxHP,
@@ -102,7 +97,7 @@ export const SpaceAttackGame: React.FC = () => {
       });
 
       if (isOver) {
-        addNFTExperience(currentCharacter!.id, 10); // XP for losing
+        addNFTExperience(currentCharacter!.id, 10);
       }
     }, 1000);
   };
@@ -163,7 +158,7 @@ export const SpaceAttackGame: React.FC = () => {
 
     if (isOver) {
       addGameReward(200, 'Space Tactics');
-      addNFTExperience(currentCharacter!.id, 50); // XP for winning
+      addNFTExperience(currentCharacter!.id, 50);
     } else {
       botTurn(nextState);
     }

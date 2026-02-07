@@ -1,4 +1,6 @@
+
 import { Transaction } from '../types';
+import { waitForVault } from './blurtService';
 
 const BLURT_RPC = 'https://rpc.blurt.world';
 const SIDECHAIN_ID = 'quest_protocol';
@@ -50,11 +52,12 @@ export const fetchBlurtBlocks = async (lastBlock: number): Promise<BlurtOperatio
 };
 
 export const broadcastToBlurt = async (username: string, key: string, json: any) => {
-  // Requires Blurt Keychain or private key signing logic.
-  // We will assume window.blurt_keychain exists for this simulation
-  if ((window as any).blurt_keychain) {
+  // Wait for the vault to be ready
+  const vault = await waitForVault(3000);
+  
+  if (vault) {
     return new Promise((resolve, reject) => {
-      (window as any).blurt_keychain.requestCustomJson(
+      vault.requestCustomJson(
         username,
         SIDECHAIN_ID,
         'Active',
@@ -67,7 +70,7 @@ export const broadcastToBlurt = async (username: string, key: string, json: any)
       );
     });
   } else {
-    console.warn("Blurt Keychain not found. Simulating broadcast.");
+    console.warn("Blurt Keychain not found after timeout. Simulating broadcast.");
     return { success: true, result: "Simulated" };
   }
 };
