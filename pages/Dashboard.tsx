@@ -1,14 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../context/ChainContext';
-import { Wallet, Ticket, Activity, Send, Cpu, Pickaxe, Zap, Clock, RefreshCw, Flame, ShieldCheck, Fingerprint, Battery, Sparkles } from 'lucide-react';
-// Fix: Added missing import for GAME_PASS_COST
+import { Wallet, Ticket, Activity, Send, Cpu, Pickaxe, Zap, Clock, RefreshCw, Flame, ShieldCheck, Fingerprint, Battery, Sparkles, Power } from 'lucide-react';
 import { BURN_ACCOUNT, GAME_PASS_COST } from '../types';
 
 export const Dashboard: React.FC = () => {
   const { user, chain, buyGamePass, sendTransaction, mineBlock, activateNode } = useChain();
   const [transferTo, setTransferTo] = useState('');
   const [transferAmount, setTransferAmount] = useState('');
-  const [isMining, setIsMining] = useState(false);
   const [timeLeft, setTimeLeft] = useState<string>('');
 
   const handleSend = (e: React.FormEvent) => {
@@ -90,7 +88,9 @@ export const Dashboard: React.FC = () => {
                  </div>
                  <div>
                     <h2 className="text-2xl font-black text-white">@{user.username}</h2>
-                    <p className="text-[10px] font-mono text-sci-cyan uppercase tracking-widest">Node Level 1 Access</p>
+                    <p className={`text-[10px] font-mono uppercase tracking-widest ${nodeIsActive ? 'text-sci-cyan' : 'text-slate-500'}`}>
+                      {nodeIsActive ? 'NODE LEVEL 1 ACTIVE' : 'NODE OFFLINE'}
+                    </p>
                  </div>
               </div>
               <div className="space-y-4">
@@ -99,7 +99,16 @@ export const Dashboard: React.FC = () => {
                  </button>
                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
                     <span className="text-[10px] text-slate-500 font-mono uppercase">Node Session</span>
-                    <span className={`text-xs font-black ${nodeIsActive ? 'text-green-400' : 'text-red-500'}`}>{timeLeft}</span>
+                    {nodeIsActive ? (
+                      <span className="text-xs font-black text-green-400">{timeLeft}</span>
+                    ) : (
+                      <button 
+                        onClick={activateNode}
+                        className="flex items-center bg-sci-cyan/10 hover:bg-sci-cyan/20 text-sci-cyan border border-sci-cyan/30 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all animate-pulse"
+                      >
+                        <Power size={12} className="mr-1.5" /> Start Session
+                      </button>
+                    )}
                  </div>
               </div>
            </div>
