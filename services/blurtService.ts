@@ -69,7 +69,7 @@ export const authenticateWithWhaleVault = async (username: string): Promise<{ su
 
   return new Promise((resolve) => {
     const memo = `Quest Protocol Auth: ${username} @ ${Date.now()}`;
-    const keyType = 'Posting'; // Standard key type
+    const keyType = "Posting"; // STRICT STRING
     
     // Check available methods
     const signBuffer = vault.requestSignBuffer || vault.request_sign_buffer;
@@ -79,21 +79,29 @@ export const authenticateWithWhaleVault = async (username: string): Promise<{ su
     }
 
     try {
-      // Signature: (username, message, keyType, callback, rpc_node)
-      signBuffer.call(vault, username, memo, keyType, (response: any) => {
-        // Normalize response formats across extensions
-        if (response) {
-          if (response.success === true || (typeof response === 'string' && response.length > 30)) {
-            const signature = response.result || (typeof response === 'string' ? response : null);
-            resolve({ success: true, signature, message: 'Identity Link Verified.' });
+      // Normalizing call: (username, message, key, callback, rpc, title)
+      signBuffer.call(
+        vault, 
+        username, 
+        memo, 
+        keyType, 
+        (response: any) => {
+          if (response) {
+            const isSuccess = response.success === true || (typeof response === 'string' && response.length > 30);
+            if (isSuccess) {
+              const signature = response.result || (typeof response === 'string' ? response : null);
+              resolve({ success: true, signature, message: 'Identity Link Verified.' });
+            } else {
+              const error = response.message || response.error || 'Identity uplink rejected.';
+              resolve({ success: false, message: error });
+            }
           } else {
-            const error = response.message || response.error || 'Identity uplink rejected.';
-            resolve({ success: false, message: error });
+            resolve({ success: false, message: 'No response from identity provider.' });
           }
-        } else {
-          resolve({ success: false, message: 'No response from identity provider.' });
-        }
-      });
+        },
+        null, // Use default RPC
+        "Quest Authentication"
+      );
     } catch (e: any) {
       resolve({ success: false, message: `Vault Error: ${e.message}` });
     }
@@ -105,7 +113,7 @@ export const anchorBlockToBlurt = async (username: string, blockHeader: any): Pr
   if (!vault) return { success: false, message: 'WhaleVault / Keychain not detected.' };
 
   return new Promise((resolve) => {
-    const keyType = 'Posting';
+    const keyType = "Posting"; // STRICT STRING
     const customJson = vault.requestCustomJson || vault.request_custom_json;
 
     if (typeof customJson !== 'function') {

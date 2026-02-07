@@ -335,15 +335,37 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const mineBlock = async () => {
     const db = getDb();
-    if (!db || !user.username || user.username !== chain.currentWitness) return;
+    if (!db || !user.username) return;
+
+    // Hard fetch actual tip from DB to avoid stale React state indices
+    const tipRes = db.exec("SELECT * FROM blocks ORDER BY index_id DESC LIMIT 1");
+    let lastBlock = null;
+    if (tipRes && tipRes.length > 0 && tipRes[0].values.length > 0) {
+      const row = tipRes[0].values[0];
+      lastBlock = {
+        index: row[0], hash: row[1], previousHash: row[2], validator: row[3], timestamp: row[4], 
+        merkleRoot: row[8], chainId: row[9], blurtAnchorId: row[6], transactions: JSON.parse(row[7] || '[]')
+      };
+    }
+
+    // Double check witness turn
+    const witnessesRes = db.exec("SELECT username FROM witnesses WHERE active = 1 ORDER BY votes DESC, username ASC");
+    const witnesses = witnessesRes && witnessesRes.length > 0 ? witnessesRes[0].values.map(r => r[0] as string) : [ADMIN_USER];
+    const expectedIndex = lastBlock ? lastBlock.index + 1 : 1;
+    const scheduledWitness = witnesses[(expectedIndex - 1) % witnesses.length] || witnesses[0];
+
+    if (user.username !== scheduledWitness) {
+      alert(`Consensus Violation: Not your turn. Next validator: @${scheduledWitness}`);
+      return;
+    }
 
     const pendingRes = db.exec("SELECT * FROM transactions WHERE block_index IS NULL");
     const transactions: Transaction[] = (pendingRes?.[0]?.values || []).map((row: any) => ({
       id: row[0], from: row[1], to: row[2], amount: row[3], type: row[4], timestamp: row[5], memo: row[6], signature: row[7]
     }));
 
-    const blockIndex = chainRef.current.blocks.length + 1;
-    const prevHash = chainRef.current.blocks[chainRef.current.blocks.length - 1]?.hash || '0'.repeat(64);
+    const blockIndex = expectedIndex;
+    const prevHash = lastBlock ? lastBlock.hash : '0'.repeat(64);
     const merkleRoot = calculateMerkleRoot(transactions);
     const timestamp = Date.now();
     
@@ -359,7 +381,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const hash = simpleHash(JSON.stringify(blockHeader));
     
     // Validate locally before anchoring
-    const localValidation = validateBlock({ ...blockHeader, hash }, chainRef.current.blocks[chainRef.current.blocks.length - 1], chainRef.current.witnesses);
+    const localValidation = validateBlock({ ...blockHeader, hash }, lastBlock, witnesses);
     if (!localValidation.valid) {
       alert("Mining Interrupted: " + localValidation.error);
       return;
