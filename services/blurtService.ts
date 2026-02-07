@@ -114,7 +114,14 @@ export const anchorBlockToBlurt = async (username: string, blockHeader: any): Pr
 
   return new Promise((resolve) => {
     const keyType = "Posting"; // STRICT STRING
-    const customJson = vault.requestCustomJson || vault.request_custom_json;
+    
+    // Attempt to find the custom_json method in various extension implementations
+    let customJson = vault.requestCustomJson || vault.request_custom_json;
+    
+    // Check for Blurt Keychain specific nested API if needed
+    if (typeof customJson !== 'function' && vault.blurt && typeof vault.blurt.requestCustomJson === 'function') {
+      customJson = vault.blurt.requestCustomJson;
+    }
 
     if (typeof customJson !== 'function') {
       return resolve({ success: false, message: 'Extension does not support custom_json operations.' });
@@ -123,7 +130,7 @@ export const anchorBlockToBlurt = async (username: string, blockHeader: any): Pr
     try {
       // Signature: (username, id, keyType, json, displayName, callback)
       customJson.call(
-        vault,
+        vault.blurt || vault, // Use nested blurt object if that's where the method came from
         username,
         'quest_p_v1',
         keyType,

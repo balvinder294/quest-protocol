@@ -59,10 +59,15 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const [isLoading, setIsLoading] = useState(true);
   const wsRef = useRef<WebSocket | null>(null);
   const chainRef = useRef(chain);
+  const userRef = useRef(user);
 
   useEffect(() => {
     chainRef.current = chain;
   }, [chain]);
+
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   const refreshState = () => {
     const db = getDb();
@@ -335,7 +340,14 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const mineBlock = async () => {
     const db = getDb();
-    if (!db || !user.username) return;
+    if (!db || !userRef.current.username) return;
+
+    // Node Activity Check
+    const nodeActive = userRef.current.nodeActiveUntil > Date.now();
+    if (!nodeActive) {
+      alert("Node Session Expired. Please activate your node from the Dashboard.");
+      return;
+    }
 
     // Hard fetch actual tip from DB to avoid stale React state indices
     const tipRes = db.exec("SELECT * FROM blocks ORDER BY index_id DESC LIMIT 1");
@@ -354,7 +366,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const expectedIndex = lastBlock ? lastBlock.index + 1 : 1;
     const scheduledWitness = witnesses[(expectedIndex - 1) % witnesses.length] || witnesses[0];
 
-    if (user.username !== scheduledWitness) {
+    if (userRef.current.username !== scheduledWitness) {
       alert(`Consensus Violation: Not your turn. Next validator: @${scheduledWitness}`);
       return;
     }
@@ -374,7 +386,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       previousHash: prevHash,
       merkleRoot,
       timestamp,
-      validator: user.username,
+      validator: userRef.current.username,
       chainId: CHAIN_ID
     };
 
@@ -387,7 +399,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       return;
     }
 
-    const anchor = await anchorBlockToBlurt(user.username, { ...blockHeader, hash });
+    const anchor = await anchorBlockToBlurt(userRef.current.username, { ...blockHeader, hash });
     if (!anchor.success) {
       alert(anchor.message);
       return;
@@ -396,10 +408,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const fullBlock: Block = { ...blockHeader, hash, witnessSignature: anchor.txId, transactions };
 
     db.run(`INSERT INTO blocks (index_id, hash, prev_hash, validator, timestamp, merkle_root, chain_id, witness_sig, tx_count, block_data) 
-            VALUES (${blockIndex}, '${hash}', '${prevHash}', '${user.username}', ${timestamp}, '${merkleRoot}', '${CHAIN_ID}', '${anchor.txId || ""}', ${transactions.length}, '${JSON.stringify(transactions)}')`);
+            VALUES (${blockIndex}, '${hash}', '${prevHash}', '${userRef.current.username}', ${timestamp}, '${merkleRoot}', '${CHAIN_ID}', '${anchor.txId || ""}', ${transactions.length}, '${JSON.stringify(transactions)}')`);
     
     db.run(`UPDATE transactions SET block_index = ${blockIndex} WHERE block_index IS NULL`);
-    db.run(`UPDATE users SET balance = balance + 50 WHERE username = '${user.username}'`);
+    db.run(`UPDATE users SET balance = balance + 50 WHERE username = '${userRef.current.username}'`);
     
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'NEW_BLOCK', block: fullBlock }));
