@@ -19,6 +19,8 @@ export const initDB = async () => {
       const parsed = JSON.parse(savedDb);
       const uInt8Array = new Uint8Array(parsed);
       dbInstance = new SQL.Database(uInt8Array);
+      // Run migrations on existing DB to ensure new columns exist
+      runMigrations(dbInstance);
     } catch (e) {
       console.error("Failed to load saved DB, resetting", e);
       dbInstance = new SQL.Database();
@@ -34,6 +36,7 @@ export const initDB = async () => {
 
 const runMigrations = (db: any) => {
   try {
+    // 1. Create tables if they don't exist
     db.run(`
       CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
@@ -96,12 +99,20 @@ const runMigrations = (db: any) => {
         votes INTEGER DEFAULT 0,
         active BOOLEAN DEFAULT 1
       );
-
-      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('tekraze', 1000000, 1, 1, 1000000);
-      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('PROTOCOL_TREASURY', 0, 1, 1, 0);
-      INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('QUEST_BURN_VOID', 0, 1, 1, 0);
-      INSERT OR IGNORE INTO witnesses (username, votes, active) VALUES ('tekraze', 1000, 1);
     `);
+
+    // 2. Dirty Migrations (Add columns to existing tables if they are missing)
+    try { db.run("ALTER TABLE transactions ADD COLUMN block_index INTEGER DEFAULT NULL"); } catch (e) {}
+    try { db.run("ALTER TABLE blocks ADD COLUMN merkle_root TEXT"); } catch (e) {}
+    try { db.run("ALTER TABLE blocks ADD COLUMN chain_id TEXT"); } catch (e) {}
+    try { db.run("ALTER TABLE users ADD COLUMN last_node_activation INTEGER DEFAULT 0"); } catch (e) {}
+
+    // 3. Ensure Genesis State
+    db.run(`INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('tekraze', 1000000, 1, 1, 1000000);`);
+    db.run(`INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('PROTOCOL_TREASURY', 0, 1, 1, 0);`);
+    db.run(`INSERT OR IGNORE INTO users (username, balance, has_pass, is_admin, mana) VALUES ('QUEST_BURN_VOID', 0, 1, 1, 0);`);
+    db.run(`INSERT OR IGNORE INTO witnesses (username, votes, active) VALUES ('tekraze', 1000, 1);`);
+    
     saveDB();
   } catch (e) {
     console.error("Migration error", e);
