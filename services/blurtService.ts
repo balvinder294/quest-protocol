@@ -137,17 +137,13 @@ export const verifyBlurtTransaction = async (txId: string, expectedUser: string)
 
 export const authenticateWithWhaleVault = async (username: string): Promise<{ success: boolean; signature?: string; message: string }> => {
   const vault = await waitForVault(3000);
-  // console.log({vault})
-
   if (!vault) return { success: false, message: 'Extension not detected. Please install WhaleVault or Blurt Keychain.' };
-
 
   return new Promise((resolve) => {
     const memo = `Quest Protocol Auth: ${username} @ ${Date.now()}`;
     const method = vault.requestSignBuffer ? 'requestSignBuffer' : 'request_sign_buffer';
     
-    vault.requestSignBuffer(username, memo, 'Posting', (response: any) => {
-      console.log('keychain response', {response});
+    vault[method](username, memo, 'Posting', (response: any) => {
       // Extensions vary in response format; handle common patterns
       if (response && (response.success || (typeof response === 'string' && response.length > 20))) {
         resolve({ success: true, signature: response.result || response, message: 'Verified.' });

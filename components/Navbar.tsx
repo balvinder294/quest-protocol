@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
 import { NavLink } from 'react-router-dom';
-import { Hexagon, LayoutDashboard, Database, Gamepad2, ShieldAlert, LogOut, RefreshCw, Menu, X, Cpu, Box, Trophy, Share2, Vote, Zap } from 'lucide-react';
+import { Hexagon, LayoutDashboard, Database, Gamepad2, ShieldAlert, LogOut, RefreshCw, Menu, X, Cpu, Box, Trophy, Share2, Vote, Zap, Wifi, WifiOff } from 'lucide-react';
 
 export const Navbar: React.FC = () => {
   const { user, logout, chain } = useChain();
@@ -44,12 +44,16 @@ export const Navbar: React.FC = () => {
                 QUEST<span className="text-sci-cyan">PROTOCOL</span>
               </span>
               <div className="flex items-center mt-1">
-                <span className="text-[8px] font-black text-sci-cyan tracking-widest opacity-80 uppercase mr-2">Sidechain v1.6</span>
+                <span className="text-[8px] font-black text-sci-cyan tracking-widest opacity-80 uppercase mr-2">Sidechain v1.6.1</span>
                 {chain.isSyncing && (
-                  <span className="flex items-center text-[7px] text-yellow-500 animate-pulse font-mono">
+                  <span className="flex items-center text-[7px] text-yellow-500 animate-pulse font-mono mr-2">
                     <RefreshCw size={8} className="animate-spin mr-1" /> MAINNET_SYNCING
                   </span>
                 )}
+                <div className={`flex items-center text-[7px] font-mono ${chain.isP2PConnected ? 'text-green-500' : 'text-red-500 animate-pulse'}`}>
+                  {chain.isP2PConnected ? <Wifi size={8} className="mr-1" /> : <WifiOff size={8} className="mr-1" />}
+                  {chain.isP2PConnected ? 'P2P_GATEWAY_UP' : 'P2P_GATEWAY_DOWN'}
+                </div>
               </div>
             </div>
           </div>
@@ -139,7 +143,7 @@ export const Navbar: React.FC = () => {
              )}
           </div>
           <div className="bg-slate-950 p-4 text-center border-t border-slate-900">
-             <span className="text-[10px] text-slate-600 font-mono uppercase tracking-[0.3em]">Quest System Core v1.6</span>
+             <span className="text-[10px] text-slate-600 font-mono uppercase tracking-[0.3em]">Quest System Core v1.6.1</span>
           </div>
         </div>
       )}

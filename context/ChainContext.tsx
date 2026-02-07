@@ -2,9 +2,9 @@ import React, { createContext, useState, useEffect, useContext, useRef } from 'r
 import { 
   ChainState, Block, Transaction, UserState, SimulationNFT,
   ADMIN_USER, ADMIN_PREFIX, GAME_PASS_COST, NODE_PASS_COST,
-  LOGIN_BONUS, CHAIN_ID, BURN_ACCOUNT, MANA_REGEN_HOURS, PROTOCOL_ID
+  LOGIN_BONUS, CHAIN_ID, BURN_ACCOUNT, MANA_REGEN_HOURS, PROTOCOL_ID, P2P_GATEWAY
 } from '../types';
-import { simpleHash, generateId, calculateMerkleRoot } from '../services/chainUtils';
+import { simpleHash, generateId, calculateMerkleRoot, validateBlock } from '../services/chainUtils';
 import { checkBlurtAccount, verifyBlurtTransaction, authenticateWithWhaleVault, anchorBlockToBlurt, fetchMainnetHistory } from '../services/blurtService';
 import { initDB, saveDB, getDb, exportSnapshot, importSnapshot } from '../services/sqliteService';
 
@@ -48,7 +48,7 @@ export const useChain = () => {
 
 export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [chain, setChain] = useState<ChainState>({
-    blocks: [], pendingTransactions: [], totalSupply: 0, totalBurned: 0, accounts: {}, passes: {}, witnesses: [], currentWitness: '', isSyncing: false
+    blocks: [], pendingTransactions: [], totalSupply: 0, totalBurned: 0, accounts: {}, passes: {}, witnesses: [], currentWitness: '', isSyncing: false, isP2PConnected: false
   });
 
   const [user, setUser] = useState<UserState>({
@@ -57,6 +57,12 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const [authMethod, setAuthMethod] = useState<AuthMethod | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const wsRef = useRef<WebSocket | null>(null);
+  const chainRef = useRef(chain);
+
+  useEffect(() => {
+    chainRef.current = chain;
+  }, [chain]);
 
   const refreshState = () => {
     const db = getDb();
@@ -111,12 +117,14 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
       }
 
-      setChain(prev => ({
-        ...prev,
+      const nextChain = {
+        ...chainRef.current,
         blocks, pendingTransactions, totalBurned: totalBurnedCount, accounts, passes, witnesses,
         totalSupply: Object.values(accounts).reduce((a, b) => a + b, 0),
         currentWitness: witnesses[blocks.length % witnesses.length] || witnesses[0]
-      }));
+      };
+      
+      setChain(nextChain);
 
       if (activeUser) {
         const uRes = db.exec(`SELECT balance, staked_balance, mana, last_mana_sync, has_pass, is_admin, last_node_activation FROM users WHERE username = '${activeUser}'`);
@@ -136,12 +144,80 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } catch (e) { console.error("Refresh Error", e); }
   };
 
+  const connectP2P = () => {
+    if (wsRef.current) wsRef.current.close();
+    
+    try {
+      const ws = new WebSocket(P2P_GATEWAY);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setChain(prev => ({ ...prev, isP2PConnected: true }));
+        ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
+      };
+
+      ws.onclose = () => {
+        setChain(prev => ({ ...prev, isP2PConnected: false }));
+        setTimeout(connectP2P, 5000); 
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          const db = getDb();
+          if (!db) return;
+
+          switch(msg.type) {
+            case 'NEW_BLOCK':
+              const lastBlock = chainRef.current.blocks[chainRef.current.blocks.length - 1];
+              const validation = validateBlock(msg.block, lastBlock, chainRef.current.witnesses);
+              
+              if (validation.valid) {
+                db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig, merkle_root, chain_id, tx_count, block_data) 
+                        VALUES (${msg.block.index}, '${msg.block.hash}', '${msg.block.previousHash}', '${msg.block.validator}', ${msg.block.timestamp}, '${msg.block.witnessSignature || ""}', '${msg.block.merkleRoot}', '${msg.block.chainId}', ${msg.block.transactions.length}, '${JSON.stringify(msg.block.transactions)}')`);
+                saveDB();
+                refreshState();
+              } else {
+                console.warn("[P2P] Rejected Block:", validation.error);
+              }
+              break;
+            case 'NEW_TRANSACTION':
+              db.run(`INSERT OR IGNORE INTO transactions (id, from_user, to_user, amount, type, timestamp, memo) 
+                      VALUES ('${msg.tx.id}', '${msg.tx.from}', '${msg.tx.to}', ${msg.tx.amount}, '${msg.tx.type}', ${msg.tx.timestamp}, '${msg.tx.memo || ""}')`);
+              refreshState();
+              break;
+            case 'BLOCK_DATA':
+              // Batch validation for sync
+              let currentTip = chainRef.current.blocks[chainRef.current.blocks.length - 1];
+              msg.data.sort((a: any, b: any) => a.index_id - b.index_id).forEach((block: any) => {
+                 // Convert DB row format to block object for validator
+                 const blockObj = {
+                   index: block.index_id, hash: block.hash, previousHash: block.prev_hash,
+                   validator: block.validator, timestamp: block.timestamp, merkleRoot: block.merkle_root,
+                   chainId: block.chain_id, transactions: JSON.parse(block.block_data || '[]')
+                 };
+                 if (validateBlock(blockObj, currentTip, chainRef.current.witnesses).valid) {
+                    db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig) 
+                        VALUES (${block.index_id}, '${block.hash}', '${block.prev_hash}', '${block.validator}', ${block.timestamp}, '${block.witness_sig}')`);
+                    currentTip = blockObj;
+                 }
+              });
+              saveDB();
+              refreshState();
+              break;
+          }
+        } catch (e) { console.error("P2P Message Error", e); }
+      };
+    } catch (e) { console.error("P2P Connection Error", e); }
+  };
+
   useEffect(() => {
     initDB().then(() => {
       const savedUser = localStorage.getItem('quest_session_user');
       if (savedUser) setUser(p => ({ ...p, username: savedUser }));
       setIsLoading(false);
       refreshState();
+      connectP2P();
     });
   }, []);
 
@@ -151,9 +227,9 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!db) return;
 
     try {
-      // Scan history of all known witnesses for anchors
-      const targets = [ADMIN_USER, ...chain.witnesses];
+      const targets = [ADMIN_USER, ...chainRef.current.witnesses];
       const uniqueTargets = Array.from(new Set(targets));
+      let foundBlocks: any[] = [];
 
       for (const target of uniqueTargets) {
         const history = await fetchMainnetHistory(target);
@@ -162,15 +238,25 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (op[0] === 'custom_json' && op[1].id === PROTOCOL_ID) {
             try {
               const header = JSON.parse(op[1].json);
-              const exists = db.exec(`SELECT index_id FROM blocks WHERE index_id = ${header.index}`);
-              if (!exists || exists.length === 0) {
-                db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig, merkle_root, chain_id) 
-                        VALUES (${header.index}, '${header.hash}', '${header.previousHash}', '${header.validator}', ${header.timestamp}, '${item[1].trx_id}', '${header.merkleRoot}', '${header.chainId}')`);
-              }
+              header.blurtAnchorId = item[1].trx_id;
+              foundBlocks.push(header);
             } catch (e) { }
           }
         });
       }
+
+      // Sort by index and validate link before insert
+      foundBlocks.sort((a, b) => a.index - b.index);
+      let tip = chainRef.current.blocks[chainRef.current.blocks.length - 1];
+
+      foundBlocks.forEach(block => {
+        if (validateBlock(block, tip, chainRef.current.witnesses).valid) {
+          db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig, merkle_root, chain_id, tx_count, block_data) 
+                  VALUES (${block.index}, '${block.hash}', '${block.previousHash}', '${block.validator}', ${block.timestamp}, '${block.blurtAnchorId}', '${block.merkleRoot}', '${block.chainId}', ${block.transactions?.length || 0}, '${JSON.stringify(block.transactions || [])}')`);
+          tip = block;
+        }
+      });
+
       saveDB();
       refreshState();
     } finally {
@@ -224,10 +310,25 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const db = getDb();
     if (!db || !user.username || user.balance < amount) return;
 
+    const tx: Transaction = {
+      id: `tx_${generateId()}`,
+      from: user.username,
+      to,
+      amount,
+      type: 'TRANSFER',
+      timestamp: Date.now(),
+      memo
+    };
+
     db.run(`UPDATE users SET balance = balance - ${amount} WHERE username = '${user.username}'`);
     db.run(`UPDATE users SET balance = balance + ${amount} WHERE username = '${to}'`);
     db.run(`INSERT INTO transactions (id, from_user, to_user, amount, type, timestamp, memo) 
-            VALUES ('tx_${generateId()}', '${user.username}', '${to}', ${amount}, 'TRANSFER', ${Date.now()}, '${memo}')`);
+            VALUES ('${tx.id}', '${tx.from}', '${tx.to}', ${tx.amount}, '${tx.type}', ${tx.timestamp}, '${tx.memo}')`);
+    
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'NEW_TRANSACTION', tx }));
+    }
+
     saveDB();
     refreshState();
   };
@@ -241,8 +342,8 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       id: row[0], from: row[1], to: row[2], amount: row[3], type: row[4], timestamp: row[5], memo: row[6], signature: row[7]
     }));
 
-    const blockIndex = chain.blocks.length + 1;
-    const prevHash = chain.blocks[chain.blocks.length - 1]?.hash || '0'.repeat(64);
+    const blockIndex = chainRef.current.blocks.length + 1;
+    const prevHash = chainRef.current.blocks[chainRef.current.blocks.length - 1]?.hash || '0'.repeat(64);
     const merkleRoot = calculateMerkleRoot(transactions);
     const timestamp = Date.now();
     
@@ -256,12 +357,21 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
 
     const hash = simpleHash(JSON.stringify(blockHeader));
-    const anchor = await anchorBlockToBlurt(user.username, { ...blockHeader, hash });
     
+    // Validate locally before anchoring
+    const localValidation = validateBlock({ ...blockHeader, hash }, chainRef.current.blocks[chainRef.current.blocks.length - 1], chainRef.current.witnesses);
+    if (!localValidation.valid) {
+      alert("Mining Interrupted: " + localValidation.error);
+      return;
+    }
+
+    const anchor = await anchorBlockToBlurt(user.username, { ...blockHeader, hash });
     if (!anchor.success) {
       alert(anchor.message);
       return;
     }
+
+    const fullBlock: Block = { ...blockHeader, hash, witnessSignature: anchor.txId, transactions };
 
     db.run(`INSERT INTO blocks (index_id, hash, prev_hash, validator, timestamp, merkle_root, chain_id, witness_sig, tx_count, block_data) 
             VALUES (${blockIndex}, '${hash}', '${prevHash}', '${user.username}', ${timestamp}, '${merkleRoot}', '${CHAIN_ID}', '${anchor.txId || ""}', ${transactions.length}, '${JSON.stringify(transactions)}')`);
@@ -269,9 +379,13 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     db.run(`UPDATE transactions SET block_index = ${blockIndex} WHERE block_index IS NULL`);
     db.run(`UPDATE users SET balance = balance + 50 WHERE username = '${user.username}'`);
     
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'NEW_BLOCK', block: fullBlock }));
+    }
+
     saveDB();
     refreshState();
-    alert(`Block #${blockIndex} ANCHORED to Blurt. Consensus complete.`);
+    alert(`Block #${blockIndex} ANCHORED to Blurt & Broadcasted to P2P.`);
   };
 
   const buyGamePass = () => {

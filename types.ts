@@ -55,6 +55,7 @@ export interface ChainState {
   witnesses: string[];
   currentWitness: string;
   isSyncing: boolean;
+  isP2PConnected: boolean;
 }
 
 export const CHAIN_ID = 'quest_mainnet_v1';
@@ -67,5 +68,13 @@ export const LOGIN_BONUS = 1000;
 export const GAME_PASS_COST = 500;
 export const NODE_PASS_COST = 1000;
 export const MANA_REGEN_HOURS = 24;
-export const PROTOCOL_VERSION = '1.6.0-DECENTRALIZED';
+export const PROTOCOL_VERSION = '1.6.2-PROD';
 export const BURN_ACCOUNT = 'QUEST_BURN_VOID';
+
+// Deployment Configuration
+const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+const PROD_DOMAIN = 'wsgaming.blurt.one'; // CHANGE THIS TO YOUR SERVER DOMAIN
+
+export const P2P_GATEWAY = IS_LOCAL 
+  ? 'ws://localhost:8089' 
+  : `wss://${PROD_DOMAIN}`;

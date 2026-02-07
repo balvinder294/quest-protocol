@@ -30,3 +30,42 @@ export const calculateMerkleRoot = (transactions: any[]): string => {
   }
   return level[0];
 };
+
+export const validateBlock = (newBlock: any, lastBlock: any, witnesses: string[]): { valid: boolean; error?: string } => {
+  // 1. Check Sequence
+  const expectedIndex = lastBlock ? lastBlock.index + 1 : 1;
+  if (newBlock.index !== expectedIndex) {
+    return { valid: false, error: `Invalid Index: expected ${expectedIndex}, got ${newBlock.index}` };
+  }
+
+  // 2. Check Previous Hash Link
+  if (lastBlock && newBlock.previousHash !== lastBlock.hash) {
+    return { valid: false, error: "Chain Discontinuity: previousHash mismatch" };
+  }
+
+  // 3. Re-calculate Hash and Verify Header Integrity
+  const headerToHash = {
+    index: newBlock.index,
+    previousHash: newBlock.previousHash,
+    merkleRoot: newBlock.merkleRoot,
+    timestamp: newBlock.timestamp,
+    validator: newBlock.validator,
+    chainId: newBlock.chainId
+  };
+  
+  const calculatedHash = simpleHash(JSON.stringify(headerToHash));
+  if (calculatedHash !== newBlock.hash) {
+    return { valid: false, error: "Integrity Failure: hash mismatch" };
+  }
+
+  // 4. Verify Signatory Schedule (DPoS)
+  if (witnesses && witnesses.length > 0) {
+    const scheduleIndex = (newBlock.index - 1) % witnesses.length;
+    const scheduledWitness = witnesses[scheduleIndex];
+    if (newBlock.validator !== scheduledWitness) {
+      return { valid: false, error: `Consensus Violation: expected ${scheduledWitness}, got ${newBlock.validator}` };
+    }
+  }
+
+  return { valid: true };
+};
