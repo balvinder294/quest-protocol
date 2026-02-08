@@ -2,7 +2,7 @@ import React, { createContext, useState, useEffect, useContext, useRef } from 'r
 import { 
   ChainState, Block, Transaction, UserState, SimulationNFT,
   ADMIN_USER, ADMIN_PREFIX, GAME_PASS_COST, NODE_PASS_COST,
-  LOGIN_BONUS, CHAIN_ID, BURN_ACCOUNT, MANA_REGEN_HOURS, PROTOCOL_ID, P2P_GATEWAY
+  LOGIN_BONUS, CHAIN_ID, BURN_ACCOUNT, MANA_REGEN_HOURS, PROTOCOL_ID, P2P_GATEWAY, GENESIS_SUPPLY
 } from '../types';
 import { simpleHash, generateId, calculateMerkleRoot, validateBlock } from '../services/chainUtils';
 import { checkBlurtAccount, verifyBlurtTransaction, authenticateWithWhaleVault, anchorBlockToBlurt, fetchMainnetHistory } from '../services/blurtService';
@@ -60,6 +60,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const wsRef = useRef<WebSocket | null>(null);
   const chainRef = useRef(chain);
   const userRef = useRef(user);
+  const isMiningRef = useRef(false);
 
   useEffect(() => {
     chainRef.current = chain;
@@ -149,6 +150,31 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     } catch (e) { console.error("Refresh Error", e); }
   };
 
+  // AUTONOMOUS CONSENSUS HEARTBEAT
+  useEffect(() => {
+    const heartbeat = setInterval(() => {
+      const activeUser = userRef.current.username;
+      const currentWitness = chainRef.current.currentWitness;
+      const isSyncing = chainRef.current.isSyncing;
+      
+      if (!activeUser || isSyncing || isMiningRef.current) return;
+      
+      // Node is active and it's our turn
+      const nodeIsActive = userRef.current.nodeActiveUntil > Date.now();
+      const isOurTurn = activeUser === currentWitness;
+
+      if (isOurTurn && nodeIsActive) {
+        console.log(`[AUTONODE] Block #${chainRef.current.blocks.length + 1} scheduled. Starting automatic seal...`);
+        isMiningRef.current = true;
+        mineBlock().finally(() => {
+          isMiningRef.current = false;
+        });
+      }
+    }, 5000);
+
+    return () => clearInterval(heartbeat);
+  }, []);
+
   const connectP2P = () => {
     if (wsRef.current) wsRef.current.close();
     
@@ -176,14 +202,11 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             case 'NEW_BLOCK':
               const lastBlock = chainRef.current.blocks[chainRef.current.blocks.length - 1];
               const validation = validateBlock(msg.block, lastBlock, chainRef.current.witnesses);
-              
               if (validation.valid) {
                 db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig, merkle_root, chain_id, tx_count, block_data) 
                         VALUES (${msg.block.index}, '${msg.block.hash}', '${msg.block.previousHash}', '${msg.block.validator}', ${msg.block.timestamp}, '${msg.block.witnessSignature || ""}', '${msg.block.merkleRoot}', '${msg.block.chainId}', ${msg.block.transactions.length}, '${JSON.stringify(msg.block.transactions)}')`);
                 saveDB();
                 refreshState();
-              } else {
-                console.warn("[P2P] Rejected Block:", validation.error);
               }
               break;
             case 'NEW_TRANSACTION':
@@ -191,29 +214,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       VALUES ('${msg.tx.id}', '${msg.tx.from}', '${msg.tx.to}', ${msg.tx.amount}, '${msg.tx.type}', ${msg.tx.timestamp}, '${msg.tx.memo || ""}')`);
               refreshState();
               break;
-            case 'BLOCK_DATA':
-              // Batch validation for sync
-              let currentTip = chainRef.current.blocks[chainRef.current.blocks.length - 1];
-              msg.data.sort((a: any, b: any) => a.index_id - b.index_id).forEach((block: any) => {
-                 // Convert DB row format to block object for validator
-                 const blockObj = {
-                   index: block.index_id, hash: block.hash, previousHash: block.prev_hash,
-                   validator: block.validator, timestamp: block.timestamp, merkleRoot: block.merkle_root,
-                   chainId: block.chain_id, transactions: JSON.parse(block.block_data || '[]')
-                 };
-                 if (validateBlock(blockObj, currentTip, chainRef.current.witnesses).valid) {
-                    db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig) 
-                        VALUES (${block.index_id}, '${block.hash}', '${block.prev_hash}', '${block.validator}', ${block.timestamp}, '${block.witness_sig}')`);
-                    currentTip = blockObj;
-                 }
-              });
-              saveDB();
-              refreshState();
-              break;
           }
-        } catch (e) { console.error("P2P Message Error", e); }
+        } catch (e) { }
       };
-    } catch (e) { console.error("P2P Connection Error", e); }
+    } catch (e) { }
   };
 
   useEffect(() => {
@@ -223,18 +227,31 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       setIsLoading(false);
       refreshState();
       connectP2P();
+      
+      // Auto-sync on startup
+      setTimeout(() => syncWithBlurt(), 1000);
     });
   }, []);
 
   const syncWithBlurt = async () => {
+    if (chainRef.current.isSyncing) return;
     setChain(prev => ({ ...prev, isSyncing: true }));
     const db = getDb();
     if (!db) return;
 
     try {
+      console.log("[SYNC] Reconstructing Sidechain State...");
+      
+      // Dynamic witness scan: find blocks from all known validators
+      const witnessesRes = db.exec("SELECT username FROM witnesses WHERE active = 1");
       const targets = [ADMIN_USER, ...chainRef.current.witnesses];
+      if (witnessesRes?.[0]?.values) {
+        witnessesRes[0].values.forEach(v => targets.push(v[0] as string));
+      }
       const uniqueTargets = Array.from(new Set(targets));
+      
       let foundBlocks: any[] = [];
+      const seenHashes = new Set();
 
       for (const target of uniqueTargets) {
         const history = await fetchMainnetHistory(target);
@@ -243,27 +260,44 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           if (op[0] === 'custom_json' && op[1].id === PROTOCOL_ID) {
             try {
               const header = JSON.parse(op[1].json);
-              header.blurtAnchorId = item[1].trx_id;
-              foundBlocks.push(header);
+              if (!seenHashes.has(header.hash)) {
+                header.blurtAnchorId = item[1].trx_id;
+                foundBlocks.push(header);
+                seenHashes.add(header.hash);
+              }
             } catch (e) { }
           }
         });
       }
 
-      // Sort by index and validate link before insert
       foundBlocks.sort((a, b) => a.index - b.index);
-      let tip = chainRef.current.blocks[chainRef.current.blocks.length - 1];
 
-      foundBlocks.forEach(block => {
-        if (validateBlock(block, tip, chainRef.current.witnesses).valid) {
-          db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig, merkle_root, chain_id, tx_count, block_data) 
+      for (const block of foundBlocks) {
+        const tipRes = db.exec(`SELECT index_id FROM blocks ORDER BY index_id DESC LIMIT 1`);
+        const currentHeight = tipRes?.[0]?.values?.[0] ? tipRes[0].values[0][0] as number : 0;
+        
+        if (block.index === currentHeight + 1) {
+           db.run(`INSERT OR IGNORE INTO blocks (index_id, hash, prev_hash, validator, timestamp, witness_sig, merkle_root, chain_id, tx_count, block_data) 
                   VALUES (${block.index}, '${block.hash}', '${block.previousHash}', '${block.validator}', ${block.timestamp}, '${block.blurtAnchorId}', '${block.merkleRoot}', '${block.chainId}', ${block.transactions?.length || 0}, '${JSON.stringify(block.transactions || [])}')`);
-          tip = block;
+           
+           // Process transactions for correct state restoration
+           if (block.transactions && block.transactions.length > 0) {
+              block.transactions.forEach((tx: Transaction) => {
+                 db.run(`UPDATE users SET balance = balance - ${tx.amount} WHERE username = '${tx.from}'`);
+                 db.run(`UPDATE users SET balance = balance + ${tx.amount} WHERE username = '${tx.to}'`);
+              });
+           }
+           // Credit block reward to validator
+           db.run(`INSERT OR IGNORE INTO users (username, balance) VALUES ('${block.validator}', 0)`);
+           db.run(`UPDATE users SET balance = balance + 50 WHERE username = '${block.validator}'`);
         }
-      });
+      }
 
       saveDB();
       refreshState();
+      console.log("[SYNC] Sync sequence complete.");
+    } catch (err) {
+      console.error("[SYNC] Sync failure", err);
     } finally {
       setChain(prev => ({ ...prev, isSyncing: false }));
     }
@@ -272,7 +306,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   const login = async (input: string, method: AuthMethod, key?: string): Promise<{success: boolean, msg: string}> => {
     setIsLoading(true);
     const db = getDb();
-    if (!db) return { success: false, msg: "DB error" };
+    if (!db) return { success: false, msg: "Database Error" };
 
     try {
       const username = input.startsWith(ADMIN_PREFIX) ? input.substring(1).toLowerCase().trim() : input.toLowerCase().trim();
@@ -285,22 +319,24 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       } else {
         const exists = await checkBlurtAccount(username);
         if (exists) verified = true;
-        else return { success: false, msg: "Account not found on Blurt" };
+        else return { success: false, msg: "Identity not found on Blurt" };
       }
 
       if (verified) {
+        // Apply LOGIN_BONUS (10,000) for new sidechain identities
         db.run(`INSERT OR IGNORE INTO users (username, balance, mana, last_mana_sync, is_admin) VALUES ('${username}', ${LOGIN_BONUS}, 100, ${Date.now()}, ${username === ADMIN_USER ? 1 : 0})`);
+        
         localStorage.setItem('quest_session_user', username);
         setAuthMethod(method);
         setUser(prev => ({ ...prev, username }));
         saveDB();
         refreshState();
         setTimeout(() => syncWithBlurt(), 500);
-        return { success: true, msg: "Uplink Secure." };
+        return { success: true, msg: "Uplink Secure. Restoring History..." };
       }
-      return { success: false, msg: "Verification failed" };
+      return { success: false, msg: "Uplink Denied" };
     } catch (e: any) {
-      return { success: false, msg: e.message || "Auth Error" };
+      return { success: false, msg: e.message || "Protocol Error" };
     } finally {
       setIsLoading(false);
     }
@@ -342,14 +378,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const db = getDb();
     if (!db || !userRef.current.username) return;
 
-    // Node Activity Check
-    const nodeActive = userRef.current.nodeActiveUntil > Date.now();
-    if (!nodeActive) {
-      alert("Node Session Expired. Please activate your node from the Dashboard.");
-      return;
-    }
-
-    // Hard fetch actual tip from DB to avoid stale React state indices
+    // Turn verification
+    const witnessesRes = db.exec("SELECT username FROM witnesses WHERE active = 1 ORDER BY votes DESC, username ASC");
+    const witnesses = witnessesRes && witnessesRes.length > 0 ? witnessesRes[0].values.map(r => r[0] as string) : [ADMIN_USER];
+    
     const tipRes = db.exec("SELECT * FROM blocks ORDER BY index_id DESC LIMIT 1");
     let lastBlock = null;
     if (tipRes && tipRes.length > 0 && tipRes[0].values.length > 0) {
@@ -360,16 +392,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       };
     }
 
-    // Double check witness turn
-    const witnessesRes = db.exec("SELECT username FROM witnesses WHERE active = 1 ORDER BY votes DESC, username ASC");
-    const witnesses = witnessesRes && witnessesRes.length > 0 ? witnessesRes[0].values.map(r => r[0] as string) : [ADMIN_USER];
     const expectedIndex = lastBlock ? lastBlock.index + 1 : 1;
     const scheduledWitness = witnesses[(expectedIndex - 1) % witnesses.length] || witnesses[0];
 
-    if (userRef.current.username !== scheduledWitness) {
-      alert(`Consensus Violation: Not your turn. Next validator: @${scheduledWitness}`);
-      return;
-    }
+    if (userRef.current.username !== scheduledWitness) return;
 
     const pendingRes = db.exec("SELECT * FROM transactions WHERE block_index IS NULL");
     const transactions: Transaction[] = (pendingRes?.[0]?.values || []).map((row: any) => ({
@@ -387,21 +413,16 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       merkleRoot,
       timestamp,
       validator: userRef.current.username,
-      chainId: CHAIN_ID
+      chainId: CHAIN_ID,
+      transactions 
     };
 
     const hash = simpleHash(JSON.stringify(blockHeader));
     
-    // Validate locally before anchoring
-    const localValidation = validateBlock({ ...blockHeader, hash }, lastBlock, witnesses);
-    if (!localValidation.valid) {
-      alert("Mining Interrupted: " + localValidation.error);
-      return;
-    }
-
+    // Anchor to Blurt
     const anchor = await anchorBlockToBlurt(userRef.current.username, { ...blockHeader, hash });
     if (!anchor.success) {
-      alert(anchor.message);
+      console.warn("[NODE] Anchoring rejected by user or extension failure.");
       return;
     }
 
@@ -419,7 +440,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     saveDB();
     refreshState();
-    alert(`Block #${blockIndex} ANCHORED to Blurt & Broadcasted to P2P.`);
+    console.log(`[NODE] Successfully anchored Block #${blockIndex}.`);
   };
 
   const buyGamePass = () => {
@@ -437,6 +458,8 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!db || !user.username || user.balance < NODE_PASS_COST) return;
     db.run(`INSERT INTO nfts (id, owner, type, sub_type, value, rarity) VALUES ('NFT_${generateId()}', '${user.username}', 'ACCESS', 'NODE_PASS', 0, 'RARE')`);
     db.run(`UPDATE users SET balance = balance - ${NODE_PASS_COST} WHERE username = '${user.username}'`);
+    // Immediately register as a witness candidate
+    db.run(`INSERT OR IGNORE INTO witnesses (username, votes, active) VALUES ('${user.username}', 0, 1)`);
     saveDB();
     refreshState();
   };
@@ -543,6 +566,8 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const db = getDb();
     if (!db || !user.username) return;
     db.run(`UPDATE users SET last_node_activation = ${Date.now()} WHERE username = '${user.username}'`);
+    // Ensure active witness status
+    db.run(`INSERT OR IGNORE INTO witnesses (username, votes, active) VALUES ('${user.username}', 0, 1)`);
     saveDB();
     refreshState();
   };

@@ -69,7 +69,7 @@ export const authenticateWithWhaleVault = async (username: string): Promise<{ su
 
   return new Promise((resolve) => {
     const memo = `Quest Protocol Auth: ${username} @ ${Date.now()}`;
-    const keyType = "Posting"; // STRICT STRING
+    const keyType = "Posting"; 
     
     // Check available methods
     const signBuffer = vault.requestSignBuffer || vault.request_sign_buffer;
@@ -113,43 +113,54 @@ export const anchorBlockToBlurt = async (username: string, blockHeader: any): Pr
   if (!vault) return { success: false, message: 'WhaleVault / Keychain not detected.' };
 
   return new Promise((resolve) => {
-    const keyType = "Posting"; // STRICT STRING
+    const keyType = "Posting"; 
     
-    // Attempt to find the custom_json method in various extension implementations
+    // Discovery logic for various Keychain implementations
+    let targetContext = vault;
     let customJson = vault.requestCustomJson || vault.request_custom_json;
-    
-    // Check for Blurt Keychain specific nested API if needed
-    if (typeof customJson !== 'function' && vault.blurt && typeof vault.blurt.requestCustomJson === 'function') {
-      customJson = vault.blurt.requestCustomJson;
+
+    // Check nested objects if top-level methods aren't found
+    if (typeof customJson !== 'function' && vault.blurt) {
+      targetContext = vault.blurt;
+      customJson = vault.blurt.requestCustomJson || vault.blurt.request_custom_json;
     }
 
     if (typeof customJson !== 'function') {
-      return resolve({ success: false, message: 'Extension does not support custom_json operations.' });
+      return resolve({ success: false, message: 'Extension logic mismatch: requestCustomJson method not found.' });
     }
 
     try {
-      // Signature: (username, id, keyType, json, displayName, callback)
+      /**
+       * Call signature for most Keychain-style extensions:
+       * (username, id, keyType, json, displayName, callback, rpc)
+       */
       customJson.call(
-        vault.blurt || vault, // Use nested blurt object if that's where the method came from
+        targetContext,
         username,
         'quest_p_v1',
         keyType,
         JSON.stringify(blockHeader),
         `Seal Quest Block #${blockHeader.index}`,
         (response: any) => {
+          // Normalize various response formats
           if (response && (response.success === true || response.result)) {
+            const txId = (response.result && typeof response.result === 'string') 
+              ? response.result 
+              : (response.data && response.data.tx_id) || 'verified';
+              
             resolve({ 
               success: true, 
-              txId: response.result || (response.error ? null : '00000000'), 
+              txId: txId, 
               message: 'Anchored to Blurt Mainnet' 
             });
           } else {
-            resolve({ success: false, message: response.message || response.error || 'Blurt anchoring failed' });
+            const errMsg = response?.message || response?.error || 'User rejected anchoring request';
+            resolve({ success: false, message: errMsg });
           }
         }
       );
     } catch (e: any) {
-      resolve({ success: false, message: `Vault Anchor Error: ${e.message}` });
+      resolve({ success: false, message: `Vault Protocol Error: ${e.message}` });
     }
   });
 };

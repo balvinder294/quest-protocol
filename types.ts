@@ -64,16 +64,16 @@ export const PROTOCOL_ID = 'quest_p_v1';
 export const ADMIN_PREFIX = '#';
 export const GENESIS_SUPPLY = 1_000_000;
 export const MAX_SUPPLY = 1_000_000_000;
-export const LOGIN_BONUS = 1000;
+export const LOGIN_BONUS = 10000; // Increased to 10k
 export const GAME_PASS_COST = 500;
 export const NODE_PASS_COST = 1000;
 export const MANA_REGEN_HOURS = 24;
-export const PROTOCOL_VERSION = '1.6.2-PROD';
+export const PROTOCOL_VERSION = '1.7.0-AUTO';
 export const BURN_ACCOUNT = 'QUEST_BURN_VOID';
 
 // Deployment Configuration
 const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const PROD_DOMAIN = 'wsgaming.blurt.one'; // CHANGE THIS TO YOUR SERVER DOMAIN
+const PROD_DOMAIN = 'wsgaming.blurt.one';
 
 export const P2P_GATEWAY = IS_LOCAL 
   ? 'ws://localhost:8089' 
