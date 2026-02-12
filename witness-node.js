@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.4
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.5
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -46,6 +46,7 @@ async function initMongo() {
 
         // Core Indexes
         await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
+        await db.collection('blocks').createIndex({ hash: 1 }, { unique: true });
         await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
         await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
         await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
@@ -77,14 +78,12 @@ async function initMongo() {
         console.log(`[NODE] Quest Sidechain Engine Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
     } catch (e) {
         console.error(`[CRITICAL] DB Initialization failed: ${e.message}`);
-        console.error(e.stack);
         process.exit(1);
     }
 }
 
 async function updateWitnessSchedule() {
     try {
-        // Fetch top witnesses by vote weight
         const topWitnesses = await db.collection('witness_stats')
             .find({})
             .sort({ total_votes: -1 })
@@ -108,7 +107,6 @@ async function startProducerLoop() {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = lastBlock ? lastBlock.index + 1 : 1;
             
-            // DPoS Round Robin
             const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
             const currentWitness = currentWitnessSchedule[scheduleIndex];
 
@@ -142,16 +140,22 @@ async function produceBlock(index, prevHash) {
     if (success) {
         console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}...]`);
         broadcast({ type: 'NEW_BLOCK', block });
-    } else {
-        console.error(`[PRODUCER] Failed to process block #${index}`);
     }
 }
 
 async function processIncomingBlock(block) {
-    const exists = await db.collection('blocks').findOne({ index: block.index });
-    if (exists) return false;
+    // Check by index OR hash to prevent duplicates/forks
+    const exists = await db.collection('blocks').findOne({ 
+        $or: [{ index: block.index }, { hash: block.hash }] 
+    });
+    
+    if (exists) {
+        if (exists.hash !== block.hash && exists.index === block.index) {
+             console.warn(`[BLOCK] Fork rejected at #${block.index}. Local hash: ${exists.hash.substring(0,8)}, Peer hash: ${block.hash.substring(0,8)}`);
+        }
+        return false;
+    }
 
-    // Use transaction if replica set, otherwise simple sequence (Normal Mode)
     if (!isStandalone) {
         const session = client.startSession();
         try {
@@ -181,7 +185,11 @@ async function processIncomingBlock(block) {
 async function executeBlockLogic(block, session) {
     const opts = session ? { session } : {};
     
-    await db.collection('blocks').insertOne(block, opts);
+    // CRITICAL: Strip internal _id to prevent E11000 duplicate key errors during P2P sync
+    const blockData = { ...block };
+    delete blockData._id;
+    
+    await db.collection('blocks').insertOne(blockData, opts);
     
     if (block.transactions) {
         for (const tx of block.transactions) {
@@ -202,7 +210,6 @@ async function executeBlockLogic(block, session) {
                     );
                     await recalculateWitnessWeight(tx.to, session);
                 }
-                // Mark transaction as processed
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
             } catch (txError) {
                 console.error(`[TX] Failed to process ${tx.id}: ${txError.message}`);
@@ -210,7 +217,6 @@ async function executeBlockLogic(block, session) {
         }
     }
     
-    // Reward validator
     await db.collection('accounts').updateOne(
         { username: block.validator }, 
         { $inc: { balance: 50 } }, 
