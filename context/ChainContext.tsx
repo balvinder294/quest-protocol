@@ -6,7 +6,7 @@ import {
   LOGIN_BONUS, CHAIN_ID, BURN_ACCOUNT, MANA_REGEN_HOURS, PROTOCOL_ID, 
   DEFAULT_P2P_GATEWAY, STORAGE_KEYS
 } from '../types';
-import { simpleHash, generateId, calculateMerkleRoot } from '../services/chainUtils';
+import { simpleHash, generateId } from '../services/chainUtils.js';
 import { checkBlurtAccount, verifyBlurtTransaction } from '../services/blurtService';
 
 type AuthMethod = 'WHALEVAULT' | 'POSTING_KEY' | 'MNEMONIC';

@@ -9,8 +9,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "witness": "node witness-node.js",
-    "cluster": "pm2 start ecosystem.config.js",
-    "cluster:stop": "pm2 stop ecosystem.config.js",
+    "cluster": "pm2 start ecosystem.config.cjs",
+    "cluster:stop": "pm2 stop ecosystem.config.cjs",
     "cluster:logs": "pm2 logs",
     "cluster:status": "pm2 status"
   },
