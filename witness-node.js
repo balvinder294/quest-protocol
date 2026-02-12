@@ -1,26 +1,29 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.1
- * STAKE-BASED DPoS CONSENSUS ENGINE
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.2
+ * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { MongoClient } from 'mongodb';
 import minimist from 'minimist';
+import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
 const CONFIG = {
     PORT: argv.port || 8089,
     MONGO_URI: argv.mongo || 'mongodb://localhost:27017',
-    DB_NAME: `quest_protocol_${argv.name || 'node'}`,
-    WITNESS_NAME: argv.name || 'anonymous_node',
-    PEER_PORTS: argv.peers ? argv.peers.toString().split(',') : [],
+    DB_NAME: `quest_protocol_${argv.db || 'node'}`,
+    WITNESS_NAME: argv.name || 'tekraze',
+    PEER_URLS: argv.peers ? argv.peers.toString().split(',') : [],
     MAX_WITNESSES: 21,
-    GENESIS_VALIDATOR: 'tekraze'
+    GENESIS_VALIDATOR: 'tekraze',
+    CHAIN_ID: 'quest_mainnet_v1'
 };
 
 let db, client;
 let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
+let activePeers = new Set();
 
 async function initMongo() {
     client = new MongoClient(CONFIG.MONGO_URI);
@@ -46,15 +49,56 @@ async function initMongo() {
             is_admin: true,
             last_mana_sync: Date.now()
         });
-        console.log("[MONGO] Genesis autonomous state provisioned.");
     }
     
     await updateWitnessSchedule();
-    console.log(`[NODE] Quest Sidechain Engine Active for ${CONFIG.WITNESS_NAME}`);
+    connectToPeers();
+    startProducerLoop();
+    console.log(`[NODE] Quest Sidechain Engine Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
+}
+
+/**
+ * Headless Production Loop
+ * Check every 3 seconds if it's this node's turn to produce a block.
+ */
+async function startProducerLoop() {
+    setInterval(async () => {
+        const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+        const nextIndex = lastBlock ? lastBlock.index + 1 : 1;
+        const currentWitness = currentWitnessSchedule[(nextIndex - 1) % currentWitnessSchedule.length];
+
+        if (currentWitness === CONFIG.WITNESS_NAME) {
+            console.log(`[PRODUCER] It is my turn (${CONFIG.WITNESS_NAME}). Assembling Block #${nextIndex}...`);
+            await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
+        }
+    }, 3000);
+}
+
+async function produceBlock(index, prevHash) {
+    // Get pending transactions (not yet in a block)
+    const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
+    
+    const blockHeader = {
+        index,
+        previousHash: prevHash,
+        merkleRoot: '0', // Simplified
+        timestamp: Date.now(),
+        validator: CONFIG.WITNESS_NAME,
+        chainId: CONFIG.CHAIN_ID,
+        transactions: pendingTxs
+    };
+
+    const hash = simpleHash(JSON.stringify(blockHeader));
+    const block = { ...blockHeader, hash };
+
+    const success = await processIncomingBlock(block);
+    if (success) {
+        console.log(`[PRODUCER] Successfully sealed Block #${index}`);
+        broadcast({ type: 'NEW_BLOCK', block });
+    }
 }
 
 async function updateWitnessSchedule() {
-    // Top accounts by "Staked Weight Received" from votes
     const topWitnesses = await db.collection('witness_stats').find({})
         .sort({ total_votes: -1 })
         .limit(CONFIG.MAX_WITNESSES)
@@ -74,16 +118,29 @@ wss.on('connection', (ws) => {
         try {
             const rpc = JSON.parse(data.toString());
             await handleRPC(rpc, ws);
-        } catch (e) { console.error("[RPC] Error:", e.message); }
+        } catch (e) { }
     });
 });
 
+function connectToPeers() {
+    CONFIG.PEER_URLS.forEach(url => {
+        const ws = new WebSocket(url);
+        ws.on('open', () => {
+            console.log(`[P2P] Linked to peer: ${url}`);
+            activePeers.add(ws);
+            ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
+        });
+        ws.on('message', (data) => handleRPC(JSON.parse(data.toString()), ws));
+        ws.on('close', () => {
+            activePeers.delete(ws);
+            setTimeout(() => connectToPeers(), 5000);
+        });
+        ws.on('error', () => {});
+    });
+}
+
 async function handleRPC(rpc, ws) {
     if (!rpc || !rpc.type) return;
-
-    const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
-    const currentHeight = lastBlock ? lastBlock.index : 0;
-    const currentWitness = currentWitnessSchedule[currentHeight % currentWitnessSchedule.length];
 
     switch (rpc.type) {
         case 'GET_BLOCKS':
@@ -91,117 +148,62 @@ async function handleRPC(rpc, ws) {
             ws.send(JSON.stringify({ 
                 type: 'BLOCK_DATA', 
                 blocks, 
-                witnesses: currentWitnessSchedule, 
-                currentWitness 
+                witnesses: currentWitnessSchedule 
             }));
             break;
 
         case 'QUERY_STATE':
             let user = await db.collection('accounts').findOne({ username: rpc.username });
             if (!user) {
-                // Initialize new account automatically (On-chain logic)
-                user = {
-                    username: rpc.username,
-                    balance: 0,
-                    staked: 0,
-                    has_pass: false,
-                    is_admin: false,
-                    last_mana_sync: Date.now()
-                };
+                user = { username: rpc.username, balance: 0, staked: 0, has_pass: false, is_admin: false, last_mana_sync: Date.now() };
                 await db.collection('accounts').insertOne(user);
             }
-            const inventory = await db.collection('nfts').find({ owner: rpc.username }).toArray();
-            ws.send(JSON.stringify({ 
-                type: 'STATE_RESPONSE', 
-                user: user,
-                inventory: inventory || []
-            }));
+            const nfts = await db.collection('nfts').find({ owner: rpc.username }).toArray();
+            ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user, inventory: nfts }));
             break;
 
         case 'NEW_BLOCK':
-            // Consensus Enforcer
-            if (rpc.block.validator !== currentWitness) {
-                console.log(`[CONSENSUS] Block Rejected: Expected ${currentWitness}, got ${rpc.block.validator}`);
-                return;
-            }
             const success = await processIncomingBlock(rpc.block);
             if (success) {
                 await updateWitnessSchedule();
-                broadcast({ 
-                    ...rpc, 
-                    witnesses: currentWitnessSchedule, 
-                    currentWitness: currentWitnessSchedule[(rpc.block.index) % currentWitnessSchedule.length] 
-                }, ws);
+                broadcast(rpc, ws);
             }
             break;
 
         case 'PUSH_TX':
             if (rpc.tx) {
-              await db.collection('transactions').updateOne(
-                  { id: rpc.tx.id },
-                  { $set: { ...rpc.tx, block_index: null } },
-                  { upsert: true }
-              );
-              broadcast(rpc, ws);
+              const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
+              if (!exists) {
+                await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
+                broadcast(rpc, ws);
+              }
             }
-            break;
-
-        case 'PING':
-            ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
             break;
     }
 }
 
 async function processIncomingBlock(block) {
+    const exists = await db.collection('blocks').findOne({ index: block.index });
+    if (exists) return false;
+
     const session = client.startSession();
     try {
         await session.withTransaction(async () => {
             await db.collection('blocks').insertOne(block, { session });
-
             if (block.transactions) {
                 for (const tx of block.transactions) {
                     if (tx.type === 'TRANSFER') {
                         await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, { session });
                         await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { session, upsert: true });
-                        
-                        // Handle XP Gain rewards via Transfer Logic (Meta-TX)
-                        if (tx.memo && tx.memo.startsWith('XP_GAIN:')) {
-                            const [_, nftId, xpAmount] = tx.memo.split(':');
-                            await db.collection('nfts').updateOne({ id: nftId }, { $inc: { xp: parseInt(xpAmount) } }, { session });
-                            // Logic for auto-level up can be added here
-                        }
-                    } 
-                    else if (tx.type === 'STAKE') {
+                    } else if (tx.type === 'STAKE') {
                         await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount, staked: tx.amount } }, { session });
-                    }
-                    else if (tx.type === 'UNSTAKE') {
+                    } else if (tx.type === 'UNSTAKE') {
                         await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: tx.amount, staked: -tx.amount } }, { session });
-                    }
-                    else if (tx.type === 'VOTE') {
+                    } else if (tx.type === 'VOTE') {
                         const voter = await db.collection('accounts').findOne({ username: tx.from });
-                        const weight = voter ? voter.staked : 0;
-                        await db.collection('votes').updateOne(
-                            { voter: tx.from }, 
-                            { $set: { witness: tx.to, weight: weight, timestamp: Date.now() } }, 
-                            { session, upsert: true }
-                        );
+                        await db.collection('votes').updateOne({ voter: tx.from }, { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, { session, upsert: true });
                         await recalculateWitnessWeight(tx.to, session);
                     }
-                    else if (tx.type === 'MINT' && tx.memo && tx.memo.startsWith('NFT_MINT:')) {
-                        const [_, type, subType, value] = tx.memo.split(':');
-                        const nft = {
-                            id: tx.id,
-                            owner: tx.to,
-                            type: type,
-                            subType: subType,
-                            value: parseInt(value),
-                            rarity: 'COMMON',
-                            level: 1,
-                            xp: 0
-                        };
-                        await db.collection('nfts').insertOne(nft, { session });
-                    }
-
                     await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, { session });
                 }
             }
@@ -216,19 +218,15 @@ async function processIncomingBlock(block) {
 }
 
 async function recalculateWitnessWeight(witnessName, session) {
-    const allVotesForWitness = await db.collection('votes').find({ witness: witnessName }).toArray();
-    const totalWeight = allVotesForWitness.reduce((acc, v) => acc + (v.weight || 0), 0);
-    
-    await db.collection('witness_stats').updateOne(
-        { username: witnessName },
-        { $set: { total_votes: totalWeight, last_update: Date.now() } },
-        { session, upsert: true }
-    );
+    const allVotes = await db.collection('votes').find({ witness: witnessName }).toArray();
+    const totalWeight = allVotes.reduce((acc, v) => acc + (v.weight || 0), 0);
+    await db.collection('witness_stats').updateOne({ username: witnessName }, { $set: { total_votes: totalWeight, last_update: Date.now() } }, { session, upsert: true });
 }
 
 function broadcast(data, excludeWs) {
     const msg = JSON.stringify(data);
     wss.clients.forEach(c => { if (c !== excludeWs && c.readyState === WebSocket.OPEN) c.send(msg); });
+    activePeers.forEach(p => { if (p !== excludeWs && p.readyState === WebSocket.OPEN) p.send(msg); });
 }
 
 initMongo();
