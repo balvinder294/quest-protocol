@@ -1,7 +1,7 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.5
- * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.6
+ * RECOVERY VERSION: Time-based skipping + Backpressure Protection
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
@@ -19,16 +19,17 @@ const CONFIG = {
     MAX_WITNESSES: 21,
     GENESIS_VALIDATOR: 'tekraze',
     DEFAULT_NODES: ['tekraze', 'kamranrkploy', 'node_gamma'],
+    BLOCK_TIME_MS: 3000,
     CHAIN_ID: 'quest_mainnet_v1'
 };
 
-// P2P Deduplication Caches to prevent broadcast storms / OOM
+// P2P Deduplication Caches
 const SEEN_TX_IDS = new Set();
 const SEEN_BLOCK_HASHES = new Set();
 const CACHE_LIMIT = 5000;
 
 let db, client;
-let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
+let currentWitnessSchedule = [...CONFIG.DEFAULT_NODES];
 let activePeers = new Map(); 
 let pendingConnections = new Set();
 let isStandalone = false;
@@ -48,15 +49,14 @@ async function initMongo() {
 
         console.log(`[DB] Cluster Node Active: ${isStandalone ? 'Standalone' : 'ReplicaSet'}`);
 
-        // Ensure Core Indexes
+        // Core Indexes
         await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
         await db.collection('blocks').createIndex({ hash: 1 }, { unique: true });
         await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
         await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
-        await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
-        // Provisioning Genesis Accounts
+        // Ensure Genesis state for default nodes
         for (const nodeName of CONFIG.DEFAULT_NODES) {
             const exists = await db.collection('accounts').findOne({ username: nodeName });
             if (!exists) {
@@ -74,9 +74,9 @@ async function initMongo() {
         CONFIG.PEER_URLS.forEach(url => connectToPeer(url.trim()));
         startProducerLoop();
         setInterval(checkConnections, 30000);
-        setInterval(cleanupCaches, 60000); // Prevent Set growth
+        setInterval(cleanupCaches, 60000); 
         
-        console.log(`[NODE] Quest Protocol v1.9.5 [DEDUP_ACTIVE]: @${CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] Quest Protocol v1.9.6 [RECOVERY_READY]: @${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error(`[CRITICAL] Boot Error: ${e.message}`);
         process.exit(1);
@@ -98,9 +98,19 @@ function cleanupCaches() {
 
 async function updateWitnessSchedule() {
     try {
-        const topWitnesses = await db.collection('witness_stats').find({}).sort({ total_votes: -1, username: 1 }).limit(CONFIG.MAX_WITNESSES).toArray();
-        currentWitnessSchedule = topWitnesses.length > 0 ? topWitnesses.map(w => w.username) : [CONFIG.GENESIS_VALIDATOR];
-    } catch (e) {}
+        const topWitnesses = await db.collection('witness_stats')
+            .find({})
+            .sort({ total_votes: -1, username: 1 })
+            .limit(CONFIG.MAX_WITNESSES)
+            .toArray();
+        
+        // Merge with Default nodes to ensure a healthy schedule even if DB is empty
+        const names = topWitnesses.map(w => w.username);
+        const combined = Array.from(new Set([...names, ...CONFIG.DEFAULT_NODES]));
+        currentWitnessSchedule = combined.slice(0, CONFIG.MAX_WITNESSES);
+    } catch (e) {
+        currentWitnessSchedule = [...CONFIG.DEFAULT_NODES];
+    }
 }
 
 function startProducerLoop() {
@@ -108,12 +118,21 @@ function startProducerLoop() {
         try {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
-            const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
+            const now = Date.now();
+            
+            // TIME-BASED WITNESS SKIPPING (Consensus Recovery)
+            // If the scheduled witness is offline, turn rotates every 12 seconds
+            const timeSinceLast = lastBlock ? (now - lastBlock.timestamp) : 0;
+            const skipCount = Math.floor(timeSinceLast / 12000); // 12s per skip
+            
+            const scheduleIndex = (nextIndex - 1 + skipCount) % currentWitnessSchedule.length;
             const scheduledWitness = currentWitnessSchedule[scheduleIndex];
 
             if (scheduledWitness === CONFIG.WITNESS_NAME) {
                 const collision = await db.collection('blocks').findOne({ index: nextIndex });
                 if (collision) return;
+                
+                console.log(`[DPoS] My Turn (Index: ${nextIndex}, Skip: ${skipCount})`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {}
@@ -127,7 +146,7 @@ async function produceBlock(index, prevHash) {
     const block = { ...blockHeader, hash };
     
     if (await processIncomingBlock(block)) {
-        console.log(`[PRODUCER] Block #${index} Sealed`);
+        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}]`);
         SEEN_BLOCK_HASHES.add(hash);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
@@ -183,6 +202,7 @@ async function executeBlockLogic(block, session) {
                     await db.collection('votes').updateOne({ voter: tx.from }, { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, { ...opts, upsert: true });
                     await recalculateWitnessWeight(tx.to, session);
                 }
+                // Mark tx as processed in this block
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { ...tx, block_index: block.index } }, { ...opts, upsert: true });
                 SEEN_TX_IDS.add(tx.id);
             } catch (err) {}
@@ -219,19 +239,18 @@ async function handleRPC(rpc, ws) {
             break;
         case 'GET_BLOCKS':
             const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(100).toArray();
-            ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: currentWitnessSchedule[blocks.length % currentWitnessSchedule.length] }));
+            ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: currentWitnessSchedule[0] }));
             break;
         case 'QUERY_STATE':
             let user = await db.collection('accounts').findOne({ username: rpc.username });
-            if (!user) {
-                user = { username: rpc.username, balance: 0, staked: 0, has_pass: false, is_admin: false, last_mana_sync: Date.now() };
-                await db.collection('accounts').insertOne(user);
+            if (user) {
+                const inventory = await db.collection('nfts').find({ owner: rpc.username }).toArray();
+                ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user, inventory }));
             }
-            const inventory = await db.collection('nfts').find({ owner: rpc.username }).toArray();
-            ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user, inventory }));
             break;
         case 'NEW_BLOCK':
             if (rpc.block && !SEEN_BLOCK_HASHES.has(rpc.block.hash)) {
+                SEEN_BLOCK_HASHES.add(rpc.block.hash);
                 if (await processIncomingBlock(rpc.block)) broadcast(rpc, ws);
             }
             break;
@@ -260,14 +279,21 @@ function connectToPeer(url) {
         });
         ws.on('message', (data) => { try { handleRPC(JSON.parse(data.toString()), ws); } catch(e) {} });
         ws.on('close', () => { activePeers.delete(url); pendingConnections.delete(url); setTimeout(() => connectToPeer(url), 10000); });
-        ws.on('error', () => { activePeers.delete(url); pendingConnections.delete(url); });
+        ws.on('error', () => { pendingConnections.delete(url); });
     } catch (e) { pendingConnections.delete(url); }
 }
 
 function broadcast(data, excludeWs) {
     const msg = JSON.stringify(data);
-    wss.clients.forEach(c => { if (c !== excludeWs && c.readyState === WebSocket.OPEN) c.send(msg); });
-    activePeers.forEach((p, url) => { if (p !== excludeWs && p.readyState === WebSocket.OPEN) p.send(msg); });
+    // BACKPRESSURE PROTECTION: Don't send if buffer is > 1MB
+    const MAX_BUFFER = 1024 * 1024;
+
+    wss.clients.forEach(c => { 
+        if (c !== excludeWs && c.readyState === WebSocket.OPEN && c.bufferedAmount < MAX_BUFFER) c.send(msg); 
+    });
+    activePeers.forEach((p, url) => { 
+        if (p !== excludeWs && p.readyState === WebSocket.OPEN && p.bufferedAmount < MAX_BUFFER) p.send(msg); 
+    });
 }
 
 function checkConnections() {
