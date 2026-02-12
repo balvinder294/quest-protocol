@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.3
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.4
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -52,7 +52,7 @@ async function initMongo() {
         await db.collection('nfts').createIndex({ owner: 1 });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
-        // Multi-Account Genesis
+        // Provisioning Genesis Accounts and Witness Passes
         for (const nodeName of CONFIG.DEFAULT_NODES) {
             const exists = await db.collection('accounts').findOne({ username: nodeName });
             
@@ -70,7 +70,6 @@ async function initMongo() {
                 await db.collection('accounts').updateOne({ username: nodeName }, { $set: { balance: 100000, has_pass: true } });
             }
 
-            // Provision NODE_PASS module
             const hasNft = await db.collection('nfts').findOne({ owner: nodeName, subType: 'NODE_PASS' });
             if (!hasNft) {
                 await db.collection('nfts').insertOne({ 
@@ -85,7 +84,6 @@ async function initMongo() {
                 });
             }
 
-            // Genesis Vote Weight
             const statsExists = await db.collection('witness_stats').findOne({ username: nodeName });
             if (!statsExists) {
                 await db.collection('witness_stats').insertOne({
@@ -101,7 +99,7 @@ async function initMongo() {
         startProducerLoop();
         setInterval(checkConnections, 30000);
         
-        console.log(`[NODE] Quest Protocol v1.9.3 Online: ${CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] Quest Protocol v1.9.4 Online: @${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error(`[CRITICAL] Boot Error: ${e.message}`);
         process.exit(1);
@@ -110,7 +108,7 @@ async function initMongo() {
 
 async function updateWitnessSchedule() {
     try {
-        // Strict deterministic sort for turning
+        // Deterministic sort for turn consistency across the cluster
         const topWitnesses = await db.collection('witness_stats')
             .find({})
             .sort({ total_votes: -1, username: 1 }) 
@@ -140,7 +138,7 @@ function startProducerLoop() {
                 const collision = await db.collection('blocks').findOne({ index: nextIndex });
                 if (collision) return;
 
-                console.log(`[DPoS] My Turn: Block #${nextIndex}`);
+                console.log(`[DPoS] My Turn: Producing Block #${nextIndex}`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {}
@@ -164,6 +162,7 @@ async function produceBlock(index, prevHash) {
     const block = { ...blockHeader, hash };
     
     if (await processIncomingBlock(block)) {
+        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}]`);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
@@ -172,7 +171,9 @@ async function processIncomingBlock(block) {
     if (!block || !block.index) return false;
     
     const existing = await db.collection('blocks').findOne({ index: block.index });
-    if (existing) return existing.hash === block.hash;
+    if (existing) {
+        return existing.hash === block.hash;
+    }
 
     if (!isStandalone) {
         const session = client.startSession();
@@ -183,8 +184,7 @@ async function processIncomingBlock(block) {
             await updateWitnessSchedule();
             return true;
         } catch (e) {
-            // Silently handle race condition (duplicate key)
-            if (e.code === 11000) return true;
+            if (e.code === 11000) return true; // Graceful race condition loss
             console.error(`[BLOCK] Logic Error: ${e.message}`);
             return false;
         } finally {
@@ -211,6 +211,7 @@ async function executeBlockLogic(block, session) {
     if (block.transactions && Array.isArray(block.transactions)) {
         for (const tx of block.transactions) {
             try {
+                // Token Movement Logic
                 if (tx.type === 'TRANSFER' || tx.type === 'MINT' || tx.type === 'REWARD') {
                     await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
                     await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
@@ -224,6 +225,7 @@ async function executeBlockLogic(block, session) {
                     await recalculateWitnessWeight(tx.to, session);
                 }
 
+                // NFT & Memo Parsing
                 if (tx.memo) {
                     if (tx.memo === 'Game Pass') {
                         await db.collection('accounts').updateOne({ username: tx.from }, { $set: { has_pass: true } }, opts);
@@ -233,7 +235,12 @@ async function executeBlockLogic(block, session) {
                     }
                 }
                 
-                await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
+                // Finalize transaction in block with upsert to prevent index collision
+                await db.collection('transactions').updateOne(
+                    { id: tx.id },
+                    { $set: { ...tx, block_index: block.index } },
+                    { ...opts, upsert: true }
+                );
             } catch (err) { }
         }
     }
@@ -288,17 +295,23 @@ async function handleRPC(rpc, ws) {
             if (await processIncomingBlock(rpc.block)) broadcast(rpc, ws);
             break;
         case 'PUSH_TX':
-            try {
-                if (rpc.tx) {
-                    // Gracefully check existence before inserting to avoid 11000 crash
-                    const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
-                    if (!exists) {
-                        await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
+            if (rpc.tx && rpc.tx.id) {
+                try {
+                    // ATOMIC UPSERT: Replaces findOne + insertOne to prevent E11000 duplicate key errors
+                    const result = await db.collection('transactions').updateOne(
+                        { id: rpc.tx.id },
+                        { $setOnInsert: { ...rpc.tx, block_index: null } },
+                        { upsert: true }
+                    );
+                    
+                    // Only broadcast if we actually inserted a new transaction
+                    if (result.upsertedCount > 0) {
                         broadcast(rpc, ws);
                     }
+                } catch (e) {
+                    // Fail silently for duplicate keys as they are normal in P2P propagation
+                    if (e.code !== 11000) console.error(`[RPC] PUSH_TX Critical Error: ${e.message}`);
                 }
-            } catch (e) {
-                if (e.code !== 11000) console.error(`[RPC] TX Error: ${e.message}`);
             }
             break;
     }
