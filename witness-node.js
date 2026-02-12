@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.5
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.6
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -25,6 +25,7 @@ let db, client;
 let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
 let activePeers = new Set();
 let isStandalone = false;
+let lastProcessedIndex = 0;
 
 async function initMongo() {
     try {
@@ -32,7 +33,6 @@ async function initMongo() {
         await client.connect();
         db = client.db(CONFIG.DB_NAME);
         
-        // Check if replica set (for transactions)
         try {
             const isMaster = await db.command({ isMaster: 1 });
             isStandalone = !isMaster.setName;
@@ -41,7 +41,7 @@ async function initMongo() {
         }
 
         if (isStandalone) {
-            console.warn(`[DB] WARN: Standalone MongoDB. Using linear processing (Standard Mode).`);
+            console.warn(`[DB] Standalone Mode: Transactions disabled. Using atomic-first sequence.`);
         }
 
         // Core Indexes
@@ -56,7 +56,7 @@ async function initMongo() {
         // Genesis setup
         const genesisUser = await db.collection('accounts').findOne({ username: CONFIG.GENESIS_VALIDATOR });
         if (!genesisUser) {
-            console.log(`[INIT] Provisioning Genesis Validator: @${CONFIG.GENESIS_VALIDATOR}`);
+            console.log(`[INIT] Bootstrapping Genesis: @${CONFIG.GENESIS_VALIDATOR}`);
             await db.collection('accounts').insertOne({
                 username: CONFIG.GENESIS_VALIDATOR,
                 balance: 1000000,
@@ -73,11 +73,14 @@ async function initMongo() {
         }
         
         await updateWitnessSchedule();
+        const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+        lastProcessedIndex = lastBlock ? lastBlock.index : 0;
+
         connectToPeers();
         startProducerLoop();
-        console.log(`[NODE] Quest Sidechain Engine Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
+        console.log(`[NODE] Quest Engine Online: ${CONFIG.WITNESS_NAME} (Port ${CONFIG.PORT})`);
     } catch (e) {
-        console.error(`[CRITICAL] DB Initialization failed: ${e.message}`);
+        console.error(`[CRITICAL] Boot failed: ${e.message}`);
         process.exit(1);
     }
 }
@@ -95,9 +98,8 @@ async function updateWitnessSchedule() {
         } else {
             currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
         }
-        console.log(`[CONSENSUS] Witness Schedule Updated: ${currentWitnessSchedule.join(', ')}`);
     } catch (e) {
-        console.error(`[CONSENSUS] Failed to update schedule: ${e.message}`);
+        console.error(`[CONSENSUS] Schedule update error: ${e.message}`);
     }
 }
 
@@ -105,17 +107,21 @@ async function startProducerLoop() {
     setInterval(async () => {
         try {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
-            const nextIndex = lastBlock ? lastBlock.index + 1 : 1;
+            const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
             
             const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
             const currentWitness = currentWitnessSchedule[scheduleIndex];
 
             if (currentWitness === CONFIG.WITNESS_NAME) {
-                console.log(`[PRODUCER] My turn (${CONFIG.WITNESS_NAME}). Assembling Block #${nextIndex}...`);
+                // Double check if we already processed this index via P2P while waiting for timer
+                const collision = await db.collection('blocks').findOne({ index: nextIndex });
+                if (collision) return;
+
+                console.log(`[PRODUCER] My Turn: Assembling Block #${nextIndex}`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {
-            console.error(`[PRODUCER] Loop error: ${e.message}`);
+            console.error(`[PRODUCER] Production loop error: ${e.message}`);
         }
     }, 3000);
 }
@@ -138,24 +144,25 @@ async function produceBlock(index, prevHash) {
 
     const success = await processIncomingBlock(block);
     if (success) {
-        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}...]`);
-        broadcast({ type: 'NEW_BLOCK', block });
+        console.log(`[PRODUCER] Block #${index} Signed and Dispatched`);
+        broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
 
 async function processIncomingBlock(block) {
-    // Check by index OR hash to prevent duplicates/forks
+    // 1. Quick check
     const exists = await db.collection('blocks').findOne({ 
         $or: [{ index: block.index }, { hash: block.hash }] 
     });
     
     if (exists) {
-        if (exists.hash !== block.hash && exists.index === block.index) {
-             console.warn(`[BLOCK] Fork rejected at #${block.index}. Local hash: ${exists.hash.substring(0,8)}, Peer hash: ${block.hash.substring(0,8)}`);
-        }
+        // If it's identical, it's a redundant broadcast, not an error
+        if (exists.hash === block.hash) return true; 
+        console.warn(`[BLOCK] Conflict at #${block.index}: Peer Hash ${block.hash.substring(0,8)} != Local ${exists.hash.substring(0,8)}`);
         return false;
     }
 
+    // 2. Linearize processing to prevent concurrent DB state mutation issues
     if (!isStandalone) {
         const session = client.startSession();
         try {
@@ -163,33 +170,45 @@ async function processIncomingBlock(block) {
                 await executeBlockLogic(block, session);
             });
             await updateWitnessSchedule();
+            lastProcessedIndex = block.index;
             return true;
         } catch (e) {
-            console.error(`[BLOCK] Transaction failed: ${e.message}`);
-            return false;
+            if (e.code !== 11000) console.error(`[BLOCK] Tx Error: ${e.message}`);
+            return e.code === 11000; // Success if someone beat us to it
         } finally {
             await session.endSession();
         }
     } else {
         try {
-            await executeBlockLogic(block, null);
+            // In standalone, we insert block first as an atomic lock
+            const blockData = { ...block };
+            delete blockData._id;
+            await db.collection('blocks').insertOne(blockData);
+            
+            // Then execute state changes
+            await executeBlockLogic(block, null, true); // skipBlockInsert=true
             await updateWitnessSchedule();
+            lastProcessedIndex = block.index;
             return true;
         } catch (e) {
-            console.error(`[BLOCK] Linear processing failed: ${e.message}`);
+            if (e.code === 11000) {
+                const check = await db.collection('blocks').findOne({ index: block.index });
+                return check && check.hash === block.hash;
+            }
+            console.error(`[BLOCK] Linear Error: ${e.message}`);
             return false;
         }
     }
 }
 
-async function executeBlockLogic(block, session) {
+async function executeBlockLogic(block, session, skipBlockInsert = false) {
     const opts = session ? { session } : {};
     
-    // CRITICAL: Strip internal _id to prevent E11000 duplicate key errors during P2P sync
-    const blockData = { ...block };
-    delete blockData._id;
-    
-    await db.collection('blocks').insertOne(blockData, opts);
+    if (!skipBlockInsert) {
+        const blockData = { ...block };
+        delete blockData._id;
+        await db.collection('blocks').insertOne(blockData, opts);
+    }
     
     if (block.transactions) {
         for (const tx of block.transactions) {
@@ -212,7 +231,7 @@ async function executeBlockLogic(block, session) {
                 }
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
             } catch (txError) {
-                console.error(`[TX] Failed to process ${tx.id}: ${txError.message}`);
+                console.error(`[TX] Failed ${tx.id}: ${txError.message}`);
             }
         }
     }
@@ -273,7 +292,7 @@ async function handleRPC(rpc, ws) {
         case 'NEW_BLOCK':
             const success = await processIncomingBlock(rpc.block);
             if (success) {
-                broadcast(rpc, ws);
+                broadcast(rpc, ws); // Gossip to other peers
             }
             break;
 
@@ -286,16 +305,19 @@ async function handleRPC(rpc, ws) {
                 }
             }
             break;
+        case 'PING':
+            ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
+            break;
     }
 }
 
 function connectToPeers() {
     CONFIG.PEER_URLS.forEach(url => {
-        if (!url) return;
+        if (!url || url.includes(`localhost:${CONFIG.PORT}`)) return;
         try {
             const ws = new WebSocket(url);
             ws.on('open', () => {
-                console.log(`[P2P] Linked to peer: ${url}`);
+                console.log(`[P2P] Linked: ${url}`);
                 activePeers.add(ws);
                 ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
             });
