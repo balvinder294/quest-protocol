@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.2
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.3
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -52,12 +52,12 @@ async function initMongo() {
         await db.collection('nfts').createIndex({ owner: 1 });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
-        // Multi-Account Genesis & Multi-Producer Setup
+        // Multi-Account Genesis
         for (const nodeName of CONFIG.DEFAULT_NODES) {
             const exists = await db.collection('accounts').findOne({ username: nodeName });
             
             if (!exists) {
-                console.log(`[INIT] Provisioning Default Account: @${nodeName} (100,000 QUEST)`);
+                console.log(`[INIT] Provisioning Default Account: @${nodeName}`);
                 await db.collection('accounts').insertOne({
                     username: nodeName,
                     balance: 100000,
@@ -85,10 +85,9 @@ async function initMongo() {
                 });
             }
 
-            // CRITICAL: Give all default nodes votes so they are in the turn schedule
+            // Genesis Vote Weight
             const statsExists = await db.collection('witness_stats').findOne({ username: nodeName });
             if (!statsExists) {
-                console.log(`[INIT] Assigning Genesis Vote Weight to @${nodeName}`);
                 await db.collection('witness_stats').insertOne({
                     username: nodeName,
                     total_votes: 10000,
@@ -102,7 +101,7 @@ async function initMongo() {
         startProducerLoop();
         setInterval(checkConnections, 30000);
         
-        console.log(`[NODE] Quest Protocol v1.9.2 Active: ${CONFIG.WITNESS_NAME} (DPoS Weight Active)`);
+        console.log(`[NODE] Quest Protocol v1.9.3 Online: ${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error(`[CRITICAL] Boot Error: ${e.message}`);
         process.exit(1);
@@ -111,10 +110,10 @@ async function initMongo() {
 
 async function updateWitnessSchedule() {
     try {
-        // Sort witnesses by votes descending to create a consistent turn list across all nodes
+        // Strict deterministic sort for turning
         const topWitnesses = await db.collection('witness_stats')
             .find({})
-            .sort({ total_votes: -1, username: 1 }) // Secondary sort on name for stability
+            .sort({ total_votes: -1, username: 1 }) 
             .limit(CONFIG.MAX_WITNESSES)
             .toArray();
 
@@ -134,16 +133,14 @@ function startProducerLoop() {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
             
-            // Deterministic selection based on block index
             const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
             const scheduledWitness = currentWitnessSchedule[scheduleIndex];
 
             if (scheduledWitness === CONFIG.WITNESS_NAME) {
-                // Double check no one else beat us to it in the last few ms
                 const collision = await db.collection('blocks').findOne({ index: nextIndex });
                 if (collision) return;
 
-                console.log(`[DPoS] My Turn for Block #${nextIndex}`);
+                console.log(`[DPoS] My Turn: Block #${nextIndex}`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {}
@@ -151,7 +148,6 @@ function startProducerLoop() {
 }
 
 async function produceBlock(index, prevHash) {
-    // Only include transactions not already in a block
     const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
     
     const blockHeader = {
@@ -168,7 +164,6 @@ async function produceBlock(index, prevHash) {
     const block = { ...blockHeader, hash };
     
     if (await processIncomingBlock(block)) {
-        console.log(`[PRODUCER] Block #${index} Sealed and Broadcasted`);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
@@ -176,19 +171,8 @@ async function produceBlock(index, prevHash) {
 async function processIncomingBlock(block) {
     if (!block || !block.index) return false;
     
-    // 1. Check if we already have this block
     const existing = await db.collection('blocks').findOne({ index: block.index });
-    if (existing) {
-        return existing.hash === block.hash;
-    }
-
-    // 2. Validate Turn (Verify that the sender was actually scheduled)
-    const scheduleIndex = (block.index - 1) % currentWitnessSchedule.length;
-    const scheduledWitness = currentWitnessSchedule[scheduleIndex];
-    if (block.validator !== scheduledWitness) {
-        console.warn(`[SECURITY] Out-of-turn block from @${block.validator} (Expected @${scheduledWitness})`);
-        // We allow it for now if we are alone, but in production this is a rejection
-    }
+    if (existing) return existing.hash === block.hash;
 
     if (!isStandalone) {
         const session = client.startSession();
@@ -199,9 +183,9 @@ async function processIncomingBlock(block) {
             await updateWitnessSchedule();
             return true;
         } catch (e) {
-            // Log code 11000 (duplicate) as a race condition loss, not an error
+            // Silently handle race condition (duplicate key)
             if (e.code === 11000) return true;
-            console.error(`[TX] Block Execution Error: ${e.message}`);
+            console.error(`[BLOCK] Logic Error: ${e.message}`);
             return false;
         } finally {
             await session.endSession();
@@ -227,7 +211,6 @@ async function executeBlockLogic(block, session) {
     if (block.transactions && Array.isArray(block.transactions)) {
         for (const tx of block.transactions) {
             try {
-                // Token Movement
                 if (tx.type === 'TRANSFER' || tx.type === 'MINT' || tx.type === 'REWARD') {
                     await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
                     await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
@@ -241,29 +224,19 @@ async function executeBlockLogic(block, session) {
                     await recalculateWitnessWeight(tx.to, session);
                 }
 
-                // Memo Handlers
                 if (tx.memo) {
                     if (tx.memo === 'Game Pass') {
                         await db.collection('accounts').updateOne({ username: tx.from }, { $set: { has_pass: true } }, opts);
-                        await db.collection('nfts').insertOne({ id: `pass_${generateId()}`, owner: tx.from, type: 'ACCESS', subType: 'GAME_PASS', rarity: 'RARE', level: 1, xp: 0, value: 0 }, opts);
+                        await db.collection('nfts').updateOne({ id: `pass_${generateId()}` }, { $set: { owner: tx.from, type: 'ACCESS', subType: 'GAME_PASS', rarity: 'RARE', level: 1, xp: 0, value: 0 } }, { ...opts, upsert: true });
                     } else if (tx.memo === 'Node Pass') {
-                        await db.collection('nfts').insertOne({ id: `node_${generateId()}`, owner: tx.from, type: 'ACCESS', subType: 'NODE_PASS', rarity: 'EPIC', level: 1, xp: 0, value: 0 }, opts);
-                    } else if (tx.memo.startsWith('NFT_MINT:')) {
-                        const [_, type, subType, val] = tx.memo.split(':');
-                        await db.collection('nfts').insertOne({ id: `nft_${generateId()}`, owner: tx.to, type, subType, value: parseInt(val), rarity: parseInt(val) > 50 ? 'RARE' : 'COMMON', level: 1, xp: 0 }, opts);
-                    } else if (tx.memo.startsWith('UPGRADE_NFT:')) {
-                        const [_, nftId, bonus] = tx.memo.split(':');
-                        await db.collection('nfts').updateOne({ id: nftId, owner: tx.from }, { $inc: { level: 1, value: parseInt(bonus) } }, opts);
+                        await db.collection('nfts').updateOne({ id: `node_${generateId()}` }, { $set: { owner: tx.from, type: 'ACCESS', subType: 'NODE_PASS', rarity: 'EPIC', level: 1, xp: 0, value: 0 } }, { ...opts, upsert: true });
                     }
                 }
                 
-                // Mark transaction as processed
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
             } catch (err) { }
         }
     }
-    
-    // Witness Reward
     await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
 }
 
@@ -315,11 +288,17 @@ async function handleRPC(rpc, ws) {
             if (await processIncomingBlock(rpc.block)) broadcast(rpc, ws);
             break;
         case 'PUSH_TX':
-            // Verify TX doesn't already exist to prevent "dup id" in mempool
-            const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
-            if (rpc.tx && !exists) {
-                await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
-                broadcast(rpc, ws);
+            try {
+                if (rpc.tx) {
+                    // Gracefully check existence before inserting to avoid 11000 crash
+                    const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
+                    if (!exists) {
+                        await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
+                        broadcast(rpc, ws);
+                    }
+                }
+            } catch (e) {
+                if (e.code !== 11000) console.error(`[RPC] TX Error: ${e.message}`);
             }
             break;
     }
