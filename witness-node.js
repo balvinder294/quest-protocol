@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.2
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.3
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -24,64 +24,76 @@ const CONFIG = {
 let db, client;
 let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
 let activePeers = new Set();
+let isStandalone = false;
 
 async function initMongo() {
-    client = new MongoClient(CONFIG.MONGO_URI);
-    await client.connect();
-    db = client.db(CONFIG.DB_NAME);
-    
-    // Core Indexes
-    await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
-    await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
-    await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
-    await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
-    await db.collection('votes').createIndex({ voter: 1, witness: 1 }, { unique: true });
-    await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
+    try {
+        client = new MongoClient(CONFIG.MONGO_URI);
+        await client.connect();
+        db = client.db(CONFIG.DB_NAME);
+        
+        // Check if replica set (for transactions)
+        const isMaster = await db.command({ isMaster: 1 });
+        isStandalone = !isMaster.setName;
+        if (isStandalone) {
+            console.warn(`[DB] WARN: Standalone MongoDB detected. Transactions disabled. Use a Replica Set for production.`);
+        }
 
-    // Genesis setup
-    const genesisUser = await db.collection('accounts').findOne({ username: CONFIG.GENESIS_VALIDATOR });
-    if (!genesisUser) {
-        await db.collection('accounts').insertOne({
-            username: CONFIG.GENESIS_VALIDATOR,
-            balance: 1000000,
-            staked: 10000,
-            has_pass: true,
-            is_admin: true,
-            last_mana_sync: Date.now()
-        });
+        // Core Indexes
+        await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
+        await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
+        await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
+        await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
+        await db.collection('votes').createIndex({ voter: 1, witness: 1 }, { unique: true });
+        await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
+
+        // Genesis setup
+        const genesisUser = await db.collection('accounts').findOne({ username: CONFIG.GENESIS_VALIDATOR });
+        if (!genesisUser) {
+            await db.collection('accounts').insertOne({
+                username: CONFIG.GENESIS_VALIDATOR,
+                balance: 1000000,
+                staked: 10000,
+                has_pass: true,
+                is_admin: true,
+                last_mana_sync: Date.now()
+            });
+        }
+        
+        await updateWitnessSchedule();
+        connectToPeers();
+        startProducerLoop();
+        console.log(`[NODE] Quest Sidechain Engine Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
+    } catch (e) {
+        console.error(`[CRITICAL] DB Initialization failed: ${e.message}`);
+        process.exit(1);
     }
-    
-    await updateWitnessSchedule();
-    connectToPeers();
-    startProducerLoop();
-    console.log(`[NODE] Quest Sidechain Engine Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
 }
 
-/**
- * Headless Production Loop
- * Check every 3 seconds if it's this node's turn to produce a block.
- */
 async function startProducerLoop() {
     setInterval(async () => {
-        const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
-        const nextIndex = lastBlock ? lastBlock.index + 1 : 1;
-        const currentWitness = currentWitnessSchedule[(nextIndex - 1) % currentWitnessSchedule.length];
+        try {
+            const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+            const nextIndex = lastBlock ? lastBlock.index + 1 : 1;
+            const currentWitness = currentWitnessSchedule[(nextIndex - 1) % currentWitnessSchedule.length];
 
-        if (currentWitness === CONFIG.WITNESS_NAME) {
-            console.log(`[PRODUCER] It is my turn (${CONFIG.WITNESS_NAME}). Assembling Block #${nextIndex}...`);
-            await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
+            if (currentWitness === CONFIG.WITNESS_NAME) {
+                console.log(`[PRODUCER] My turn (${CONFIG.WITNESS_NAME}). Assembling Block #${nextIndex}...`);
+                await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
+            }
+        } catch (e) {
+            console.error(`[PRODUCER] Loop error: ${e.message}`);
         }
     }, 3000);
 }
 
 async function produceBlock(index, prevHash) {
-    // Get pending transactions (not yet in a block)
     const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
     
     const blockHeader = {
         index,
         previousHash: prevHash,
-        merkleRoot: '0', // Simplified
+        merkleRoot: '0',
         timestamp: Date.now(),
         validator: CONFIG.WITNESS_NAME,
         chainId: CONFIG.CHAIN_ID,
@@ -95,20 +107,81 @@ async function produceBlock(index, prevHash) {
     if (success) {
         console.log(`[PRODUCER] Successfully sealed Block #${index}`);
         broadcast({ type: 'NEW_BLOCK', block });
+    } else {
+        console.error(`[PRODUCER] Failed to process locally produced block #${index}`);
     }
 }
 
-async function updateWitnessSchedule() {
-    const topWitnesses = await db.collection('witness_stats').find({})
-        .sort({ total_votes: -1 })
-        .limit(CONFIG.MAX_WITNESSES)
-        .toArray();
+async function processIncomingBlock(block) {
+    const exists = await db.collection('blocks').findOne({ index: block.index });
+    if (exists) return false;
 
-    if (topWitnesses.length === 0) {
-        currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
+    // Use transaction if replica set, otherwise simple sequence
+    if (!isStandalone) {
+        const session = client.startSession();
+        try {
+            await session.withTransaction(async () => {
+                await executeBlockLogic(block, session);
+            });
+            return true;
+        } catch (e) {
+            console.error(`[BLOCK] Transaction failed: ${e.message}`);
+            return false;
+        } finally {
+            await session.endSession();
+        }
     } else {
-        currentWitnessSchedule = topWitnesses.map(w => w.username);
+        try {
+            await executeBlockLogic(block, null);
+            return true;
+        } catch (e) {
+            console.error(`[BLOCK] Standalone processing failed: ${e.message}`);
+            return false;
+        }
     }
+}
+
+async function executeBlockLogic(block, session) {
+    const opts = session ? { session } : {};
+    
+    await db.collection('blocks').insertOne(block, opts);
+    
+    if (block.transactions) {
+        for (const tx of block.transactions) {
+            if (tx.type === 'TRANSFER') {
+                await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
+                await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
+            } else if (tx.type === 'STAKE') {
+                await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount, staked: tx.amount } }, opts);
+            } else if (tx.type === 'UNSTAKE') {
+                await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: tx.amount, staked: -tx.amount } }, opts);
+            } else if (tx.type === 'VOTE') {
+                const voter = await db.collection('accounts').findOne({ username: tx.from }, opts);
+                await db.collection('votes').updateOne(
+                    { voter: tx.from }, 
+                    { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, 
+                    { ...opts, upsert: true }
+                );
+                await recalculateWitnessWeight(tx.to, session);
+            }
+            // Mark transaction as processed
+            await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
+        }
+    }
+    
+    // Reward validator
+    await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
+}
+
+async function recalculateWitnessWeight(witnessName, session) {
+    const opts = session ? { session } : {};
+    const allVotes = await db.collection('votes').find({ witness: witnessName }, opts).toArray();
+    const totalWeight = allVotes.reduce((acc, v) => acc + (v.weight || 0), 0);
+    await db.collection('witness_stats').updateOne(
+        { username: witnessName }, 
+        { $set: { total_votes: totalWeight, last_update: Date.now() } }, 
+        { ...opts, upsert: true }
+    );
 }
 
 const wss = new WebSocketServer({ port: CONFIG.PORT });
@@ -121,23 +194,6 @@ wss.on('connection', (ws) => {
         } catch (e) { }
     });
 });
-
-function connectToPeers() {
-    CONFIG.PEER_URLS.forEach(url => {
-        const ws = new WebSocket(url);
-        ws.on('open', () => {
-            console.log(`[P2P] Linked to peer: ${url}`);
-            activePeers.add(ws);
-            ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
-        });
-        ws.on('message', (data) => handleRPC(JSON.parse(data.toString()), ws));
-        ws.on('close', () => {
-            activePeers.delete(ws);
-            setTimeout(() => connectToPeers(), 5000);
-        });
-        ws.on('error', () => {});
-    });
-}
 
 async function handleRPC(rpc, ws) {
     if (!rpc || !rpc.type) return;
@@ -172,55 +228,37 @@ async function handleRPC(rpc, ws) {
 
         case 'PUSH_TX':
             if (rpc.tx) {
-              const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
-              if (!exists) {
-                await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
-                broadcast(rpc, ws);
-              }
+                const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
+                if (!exists) {
+                    await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
+                    broadcast(rpc, ws);
+                }
             }
             break;
     }
 }
 
-async function processIncomingBlock(block) {
-    const exists = await db.collection('blocks').findOne({ index: block.index });
-    if (exists) return false;
-
-    const session = client.startSession();
-    try {
-        await session.withTransaction(async () => {
-            await db.collection('blocks').insertOne(block, { session });
-            if (block.transactions) {
-                for (const tx of block.transactions) {
-                    if (tx.type === 'TRANSFER') {
-                        await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, { session });
-                        await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { session, upsert: true });
-                    } else if (tx.type === 'STAKE') {
-                        await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount, staked: tx.amount } }, { session });
-                    } else if (tx.type === 'UNSTAKE') {
-                        await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: tx.amount, staked: -tx.amount } }, { session });
-                    } else if (tx.type === 'VOTE') {
-                        const voter = await db.collection('accounts').findOne({ username: tx.from });
-                        await db.collection('votes').updateOne({ voter: tx.from }, { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, { session, upsert: true });
-                        await recalculateWitnessWeight(tx.to, session);
-                    }
-                    await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, { session });
-                }
-            }
-            await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { session });
-        });
-        return true;
-    } catch (e) {
-        return false;
-    } finally {
-        await session.endSession();
-    }
-}
-
-async function recalculateWitnessWeight(witnessName, session) {
-    const allVotes = await db.collection('votes').find({ witness: witnessName }).toArray();
-    const totalWeight = allVotes.reduce((acc, v) => acc + (v.weight || 0), 0);
-    await db.collection('witness_stats').updateOne({ username: witnessName }, { $set: { total_votes: totalWeight, last_update: Date.now() } }, { session, upsert: true });
+function connectToPeers() {
+    CONFIG.PEER_URLS.forEach(url => {
+        try {
+            const ws = new WebSocket(url);
+            ws.on('open', () => {
+                console.log(`[P2P] Linked to peer: ${url}`);
+                activePeers.add(ws);
+                ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
+            });
+            ws.on('message', (data) => {
+                try {
+                    handleRPC(JSON.parse(data.toString()), ws);
+                } catch(e) {}
+            });
+            ws.on('close', () => {
+                activePeers.delete(ws);
+                setTimeout(() => connectToPeers(), 5000);
+            });
+            ws.on('error', () => {});
+        } catch (e) {}
+    });
 }
 
 function broadcast(data, excludeWs) {
