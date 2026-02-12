@@ -6,6 +6,7 @@ import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { Explorer } from './pages/Explorer';
 import { Admin } from './pages/Admin';
+import { AdminNFTManager } from './pages/AdminNFTManager';
 import { Games } from './pages/Games';
 import { Swap } from './pages/Swap';
 import { Inventory } from './pages/Inventory';
@@ -71,16 +72,17 @@ const AppContent: React.FC = () => {
             <Route path="/games/grid-hunt" element={<ProtectedRoute><GridHuntGame /></ProtectedRoute>} />
 
             <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+            <Route path="/admin/nfts" element={<ProtectedRoute><AdminNFTManager /></ProtectedRoute>} />
             <Route path="/explorer" element={<Explorer />} />
             <Route path="*" element={<Navigate to="/" />} />
           </Routes>
         </main>
         <footer className="border-t border-slate-900 bg-slate-950 py-4 mt-auto">
           <div className="max-w-7xl mx-auto px-4 flex justify-between items-center text-[10px] font-mono text-slate-600">
-             <div>QUEST_PROTOCOL_V1.5.0 [STABLE]</div>
+             <div>QUEST_PROTOCOL_V1.7.5 [STABLE]</div>
              <div className="flex gap-4">
                 <Link to="/team" className="hover:text-sci-cyan transition">COMMAND_TEAM</Link>
-                <span>NODE_STATUS: RC_SYNCHRONIZED</span>
+                <span>NODE_STATUS: TRIPLE_CLUSTER_SYNC</span>
              </div>
           </div>
         </footer>

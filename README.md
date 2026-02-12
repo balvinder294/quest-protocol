@@ -1,75 +1,60 @@
-# 🌌 Quest Protocol | Blurt Gaming Sidechain (L2)
 
-Quest Protocol is a decentralized Layer 2 (L2) gaming sidechain built on top of the **Blurt Blockchain**. It leverages Blurt for **Data Availability (DA)** through block anchoring, while maintaining a high-performance, low-fee environment for gaming transactions and NFT management.
+# 🌌 Quest Protocol | Decentralized MongoDB Sidechain
+
+Quest Protocol is a high-performance Layer 2 (L2) sidechain built for the **Blurt Blockchain**. It transitions state management from local browser storage to a distributed **MongoDB Cluster**, allowing for a truly decentralized gaming economy.
+
+---
+
+## 🛠 Node Operator Guide (Decentralization)
+
+To support the network and earn **QUEST Mining Rewards**, you can run your own protocol node.
+
+### 1. Requirements
+- Node.js v18+
+- MongoDB Instance (Local or Cloud)
+- Blurt Account with a **Node Access Pass** NFT.
+
+### 2. Deployment
+Clone the protocol files to your server and run:
+```bash
+# Install dependencies
+npm install
+
+# Start the Witness Node
+# Replace --name with your Blurt username
+# Replace --peers with existing node ports
+node witness-node.js --port 8089 --name yourusername --mongo mongodb://localhost:27017 --peers 8090,8091
+```
+
+### 3. Client Linking
+Community members can connect to your node by navigating to the **Node Manager** in the UI and entering your WebSocket endpoint (e.g., `ws://your-ip:8089`).
 
 ---
 
 ## 💎 Tokenomics & Assets
 
 - **Native Token**: QUEST
-- **Genesis Supply**: 1,000,000 QUEST (Minted to Genesis Anchor)
-- **Max Supply**: 1,000,000,000 QUEST
-- **Mining Reward**: 50 QUEST per block (Distributed to active Witness)
-- **L1 Bridge**: 1 BLURT = 10 QUEST (Fixed rate bridge)
-- **Quest Power (QP)**: Staked QUEST used for governance voting and Resource Credit (Mana) regeneration.
+- **Consensus**: DPoS (Delegated Proof of Stake).
+- **L1 Bridge**: Fixed 1:10 BLURT-to-QUEST ratio.
+- **Quest Power (QP)**: Staked tokens that determine your influence in the witness rotation.
 
 ---
 
 ## 🚀 Getting Started
 
 ### 1. Establish Identity
-Login using one of three secure methods:
-- **WhaleVault (Recommended)**: Use your existing Blurt account.
-- **Private Posting Key**: Direct entry (Session RAM storage only).
-- **SideVault (Mnemonic)**: Create a standalone 12-word identity independent of Blurt Mainnet.
+Login using **WhaleVault**, **Posting Key**, or **SideVault (Seed)**. Note that Seed accounts operate in **Guest Mode** with simulated rewards.
 
-### 2. Synchronize with Mainnet
-Since Quest is a sidechain, its "source of truth" is anchored to the Blurt Blockchain.
-1. Go to the **Explorer** tab.
-2. Click **Sync with Mainnet**.
-3. The protocol will scan the Blurt history of the Genesis Anchor and current Witnesses to rebuild the ledger in your local browser database (SQLite).
+### 2. Enter Simulation Deck
+Earn tokens through arcade-style training modules. Requires a one-time burn of 500 QUEST for a Gaming Pass.
+
+### 3. NFT Management
+Provision, level, and refit character modules in the **Hangar**. Characters are anchored to the MongoDB global state, ensuring persistence across all nodes in the cluster.
 
 ---
 
-## 🕹 The Simulation Deck
-Earn tokens through various protocol training modules:
-- **Gaming Pass**: Access requires a one-time burn of 500 QUEST.
-- **Simulation Rewards**: Tokens are dispatched for successful simulation completions (Minesweeper, Tetris, Space Tactics, etc.).
-- **NFT Ascension**: Characters gain XP. Use the **Hangar** to refit basic units into **Elite (Prime)** classes.
-
----
-
-## 🛠 Node Operation & Witnessing
-
-The network is secured by **Delegated Proof of Stake (DPoS)**.
-
-### How to become a Witness (Node):
-1. **Mint a Node Pass**: Purchase a Node Access NFT (1000 QUEST) in the **Nodes** section.
-2. **Activate Node**: Ensure your node session is active to participate in the consensus rotation.
-3. **Earn Votes**: Other users must **Stake** their QUEST and vote for your username.
-4. **Sign Blocks**: When it is your "Consensus Turn," you can sign the pending transactions and anchor the block to Blurt to receive the **50 QUEST reward**.
-
----
-
-## 👨‍💻 Developer & Network Setup
-
-### Change the Genesis Anchor
-To launch your own version of Quest Protocol or to fork the network:
-1. Open `types.ts`.
-2. Change `ADMIN_USER` to your Blurt username.
-3. The first time you login, the 1,000,000 QUEST Genesis supply will be minted to your account.
-4. Your account history will then become the "Sync Target" for all other nodes.
-
-### Deployment
-- **Browser**: Simply host `index.html` on any web server or IPFS.
-- **Server**: Run `node witness-node.js` on a Linux server for 24/7 P2P propagation.
-
----
-
-## ⚖ Protocol Integrity
-- **Consensus**: DPoS (Round Robin based on QP Votes).
-- **Anchoring**: Blocks are sealed to Blurt using `custom_json` with ID `quest_p_v1`.
-- **Database**: SQL.js (SQLite via WASM).
+## 👨‍💻 Protocol Architecture
+Quest Protocol treats the Blurt Mainnet as a **Data Availability (DA)** layer. Blocks produced on the sidechain are hashed and anchored to Blurt via `custom_json` (ID: `quest_p_v1`). The MongoDB instance acts as the **State Projection**, providing instant finality for gaming interactions.
 
 **Lead Architects**: [@tekraze](https://blurt.blog/@tekraze) & [@kamranrkploy](https://blurt.blog/@kamranrkploy)
-*Version: 1.6.0-DECENTRALIZED | Status: OPERATIONAL*
+*Version: 1.8.0-MONGO | Status: OPERATIONAL*

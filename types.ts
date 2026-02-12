@@ -1,10 +1,11 @@
+
 export interface Transaction {
   id: string;
   from: string;
   to: string;
   amount: number;
   timestamp: number;
-  type: 'TRANSFER' | 'MINT' | 'REWARD' | 'FEE' | 'BURN' | 'STAKE' | 'UNSTAKE';
+  type: 'TRANSFER' | 'MINT' | 'REWARD' | 'FEE' | 'BURN' | 'STAKE' | 'UNSTAKE' | 'VOTE';
   memo?: string;
   signature?: string;
 }
@@ -56,25 +57,31 @@ export interface ChainState {
   currentWitness: string;
   isSyncing: boolean;
   isP2PConnected: boolean;
+  connectedNodeName?: string;
 }
 
 export const CHAIN_ID = 'quest_mainnet_v1';
-export const ADMIN_USER = 'tekraze'; // Genesis Anchor
+export const ADMIN_USER = 'tekraze'; 
 export const PROTOCOL_ID = 'quest_p_v1';
 export const ADMIN_PREFIX = '#';
 export const GENESIS_SUPPLY = 1_000_000;
 export const MAX_SUPPLY = 1_000_000_000;
-export const LOGIN_BONUS = 10000; // Increased to 10k
+export const LOGIN_BONUS = 10000;
 export const GAME_PASS_COST = 500;
 export const NODE_PASS_COST = 1000;
 export const MANA_REGEN_HOURS = 24;
-export const PROTOCOL_VERSION = '1.7.0-AUTO';
+export const PROTOCOL_VERSION = '1.8.1-MONGO';
 export const BURN_ACCOUNT = 'QUEST_BURN_VOID';
 
-// Deployment Configuration
-const IS_LOCAL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-const PROD_DOMAIN = 'wsgaming.blurt.one';
+// Consensus Constants
+export const WITNESS_COUNT = 21; // Number of top-voted nodes in rotation
+export const BLOCK_INTERVAL_MS = 3000; // 3 second blocks for gaming speed
 
-export const P2P_GATEWAY = IS_LOCAL 
-  ? 'ws://localhost:8089' 
-  : `wss://${PROD_DOMAIN}`;
+export const STORAGE_KEYS = {
+    USER: 'quest_session_user',
+    NODE_URL: 'quest_preferred_node',
+    AUTH_METHOD: 'quest_auth_method'
+};
+
+// Network Configuration
+export const DEFAULT_P2P_GATEWAY = 'wss://wsgaming.blurt.one';

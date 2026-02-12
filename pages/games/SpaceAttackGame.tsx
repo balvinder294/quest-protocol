@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../../context/ChainContext';
-// Fix: Use standard named import for Link
 import { Link } from 'react-router-dom';
 import { ChevronLeft, Sword, Shield, Zap, Target, Cpu, RefreshCw, Trophy, AlertTriangle, User, Plus, Star, ArrowUp, Activity, ShieldAlert, Info, CheckCircle } from 'lucide-react';
+import { SimulationNFT } from '../../types';
 
 interface GameState {
   playerHP: number;
@@ -18,11 +17,13 @@ interface GameState {
 }
 
 export const SpaceAttackGame: React.FC = () => {
-  const { user, provisionNFT, upgradeNFT, promoteNFT, addNFTExperience, addGameReward } = useChain();
+  const { user, provisionNFT, upgradeNFT, promoteNFT, addNFTExperience, addGameReward, authMethod } = useChain();
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [isMinting, setIsMinting] = useState(false);
   const [activeTab, setActiveTab] = useState<'SIMULATION' | 'HANGAR'>('SIMULATION');
   const [activeCharId, setActiveCharId] = useState<string | null>(null);
+
+  const isBypassed = authMethod === 'MNEMONIC';
 
   const CLASSES: Record<string, { hp: number; atk: number; luck: number; icon: React.ReactNode; cost: number; elite?: string }> = {
     TRAVELLER: { hp: 80, atk: 15, luck: 25, icon: <User className="text-slate-400" />, cost: 0, elite: 'PILOT' },
@@ -33,14 +34,29 @@ export const SpaceAttackGame: React.FC = () => {
     CYBORG: { hp: 160, atk: 25, luck: 5, icon: <Cpu className="text-green-500" />, cost: 1500 }
   };
 
-  useEffect(() => {
-    if (!activeCharId && user.inventory.some(i => i.type === 'CHARACTER')) {
-      const firstChar = user.inventory.find(i => i.type === 'CHARACTER');
-      if (firstChar) setActiveCharId(firstChar.id);
-    }
-  }, [user.inventory, activeCharId]);
+  const guestCharacter: SimulationNFT | null = isBypassed ? {
+    id: 'GUEST_MODULE',
+    owner: user.username || 'GUEST',
+    type: 'CHARACTER',
+    subType: 'TRAVELLER',
+    value: 0,
+    rarity: 'COMMON',
+    level: 1,
+    xp: 0
+  } : null;
 
-  const currentCharacter = user.inventory.find(i => i.id === activeCharId);
+  useEffect(() => {
+    if (!activeCharId) {
+      const firstChar = user.inventory.find(i => i.type === 'CHARACTER');
+      if (firstChar) {
+        setActiveCharId(firstChar.id);
+      } else if (guestCharacter) {
+        setActiveCharId('GUEST_MODULE');
+      }
+    }
+  }, [user.inventory, activeCharId, guestCharacter]);
+
+  const currentCharacter = activeCharId === 'GUEST_MODULE' ? guestCharacter : user.inventory.find(i => i.id === activeCharId);
   const augments = user.inventory.filter(i => i.type === 'AUGMENT');
 
   const startBattle = () => {
@@ -61,7 +77,7 @@ export const SpaceAttackGame: React.FC = () => {
       playerMaxHP,
       botMaxHP,
       turn: 'PLAYER',
-      log: [`[SYS] Level ${currentCharacter.level} ${currentCharacter.subType} link established.`],
+      log: [`[SYS] ${activeCharId === 'GUEST_MODULE' ? 'Guest' : 'Module'} link established.`],
       cooldown: 0,
       gameOver: false,
       winner: null
@@ -96,7 +112,7 @@ export const SpaceAttackGame: React.FC = () => {
         winner: isOver ? 'PROTOCOL_BOT' : null
       });
 
-      if (isOver) {
+      if (isOver && activeCharId !== 'GUEST_MODULE' && authMethod !== 'MNEMONIC') {
         addNFTExperience(currentCharacter!.id, 10);
       }
     }, 1000);
@@ -158,13 +174,16 @@ export const SpaceAttackGame: React.FC = () => {
 
     if (isOver) {
       addGameReward(200, 'Space Tactics');
-      addNFTExperience(currentCharacter!.id, 50);
+      if (activeCharId !== 'GUEST_MODULE' && authMethod !== 'MNEMONIC') {
+        addNFTExperience(currentCharacter!.id, 50);
+      }
     } else {
       botTurn(nextState);
     }
   };
 
   const provision = (subType: string, cost: number) => {
+    if (authMethod === 'MNEMONIC') return alert("Minting disabled in Guest Mode.");
     setIsMinting(true);
     let value = 0;
     let type: 'CHARACTER' | 'AUGMENT' = 'AUGMENT';
@@ -183,12 +202,16 @@ export const SpaceAttackGame: React.FC = () => {
   };
 
   const handleUpgrade = (id: string) => {
+    if (authMethod === 'MNEMONIC') return alert("Upgrades disabled in Guest Mode.");
+    if (id === 'GUEST_MODULE') return alert("Guest modules cannot be upgraded.");
     const cost = 200;
     const bonus = 10;
     upgradeNFT(id, cost, bonus);
   };
 
   const handleAscend = (nftId: string, currentSubType: string) => {
+    if (authMethod === 'MNEMONIC') return alert("Ascension disabled in Guest Mode.");
+    if (nftId === 'GUEST_MODULE') return alert("Guest modules cannot ascend.");
     const eliteType = CLASSES[currentSubType as keyof typeof CLASSES]?.elite;
     if (!eliteType) return;
     const cost = CLASSES[eliteType as keyof typeof CLASSES].cost;
@@ -230,11 +253,45 @@ export const SpaceAttackGame: React.FC = () => {
               <Cpu size={24} className="text-orange-500 mr-3" /> System Inventory
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {user.inventory.length === 0 && (
+              {user.inventory.length === 0 && !isBypassed && (
                 <div className="col-span-2 py-12 text-center bg-slate-900/30 rounded-2xl border border-slate-800 border-dashed">
                   <p className="text-slate-500 font-mono text-sm">No NFT modules detected in local buffer.</p>
                 </div>
               )}
+              
+              {isBypassed && (
+                <div className="bg-sci-cyan/10 border border-sci-cyan/40 p-6 rounded-2xl relative overflow-hidden group transition-all duration-300">
+                  <div className="absolute top-0 right-0 px-3 py-1 bg-sci-cyan text-black text-[8px] font-black uppercase tracking-widest rounded-bl-xl shadow-lg">
+                    GUEST_BYPASS
+                  </div>
+                  <div className="flex justify-between items-start mb-4">
+                    <div className="flex items-center space-x-3">
+                      <div className="p-3 bg-slate-950 rounded-xl border border-sci-cyan text-sci-cyan">
+                        <User size={24} />
+                      </div>
+                      <div>
+                        <p className="text-white font-black uppercase text-lg">Vanguard Guest</p>
+                        <p className="text-[10px] text-sci-cyan font-mono">ID: VIRTUAL_LINK</p>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-slate-400 font-mono leading-relaxed mb-6">
+                    A temporary module provided via Seed Bypass. Progress and XP will not be saved to the blockchain ledger.
+                  </p>
+                  <button 
+                    onClick={() => setActiveCharId('GUEST_MODULE')}
+                    className={`w-full py-2 border font-bold text-[9px] rounded-lg transition-all flex items-center justify-center ${
+                      activeCharId === 'GUEST_MODULE' 
+                        ? 'bg-green-500 text-slate-950 border-green-500' 
+                        : 'bg-slate-950 border-slate-800 text-slate-500 hover:text-white'
+                    }`}
+                  >
+                    {activeCharId === 'GUEST_MODULE' ? <CheckCircle size={10} className="mr-1" /> : <Star size={10} className="mr-1" />}
+                    {activeCharId === 'GUEST_MODULE' ? 'ACTIVE LINK' : 'SET AS GUEST'}
+                  </button>
+                </div>
+              )}
+
               {user.inventory.map(nft => {
                 const isPremium = nft.rarity === 'EPIC' || nft.rarity === 'RARE';
                 const canAscend = nft.type === 'CHARACTER' && CLASSES[nft.subType as keyof typeof CLASSES]?.elite;
@@ -352,17 +409,15 @@ export const SpaceAttackGame: React.FC = () => {
                     <span className="text-orange-500 block mb-1 uppercase">Ascension Module</span>
                     Convert basic Travellers, Cadets, or Engineers into Elite versions. Your earned Level and XP are fully maintained during refit.
                   </li>
-                  <li className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                    <span className="text-orange-500 block mb-1 uppercase">Multi-Linking</span>
-                    You can maintain multiple specialized character modules and swap your active link before simulation begins.
-                  </li>
+                  {isBypassed && (
+                    <li className="bg-sci-cyan/10 p-4 rounded-xl border border-sci-cyan/30">
+                      <span className="text-sci-cyan block mb-1 uppercase">Virtual Guesting</span>
+                      You are operating with a Virtual Vanguard module. Progress is simulated and rewards are not recorded to the ledger.
+                    </li>
+                  )}
                   <li className="bg-slate-950 p-4 rounded-xl border border-slate-800">
                     <span className="text-orange-500 block mb-1 uppercase">Augment Capacity</span>
-                    Maximum 4 active augments per session. Each augment adds raw stat values (Health, Attack, Luck) to your base character stats. Augments can be minted via the Inventory or acquired through event drops.
-                  </li>
-                  <li className="bg-slate-950 p-4 rounded-xl border border-slate-800">
-                    <span className="text-orange-500 block mb-1 uppercase">Core Refits</span>
-                    Spending QUEST in the Hangar permanently increases the base stat value of your augments and character modules.
+                    Maximum 4 active augments per session. Each augment adds raw stat values (Health, Attack, Luck) to your base character stats.
                   </li>
                 </ul>
              </div>
@@ -374,7 +429,7 @@ export const SpaceAttackGame: React.FC = () => {
              <div className="lg:col-span-12 flex flex-col items-center justify-center min-h-[500px] bg-slate-900/30 border border-slate-800 rounded-3xl p-12 text-center backdrop-blur-md">
                <Cpu size={64} className="text-orange-500 mb-6 animate-pulse" />
                <h2 className="text-3xl font-black text-white mb-2 uppercase tracking-tighter">Identity Not Provisioned</h2>
-               <p className="text-slate-400 mb-10 max-w-md font-mono">
+               <p className="text-slate-400 mb-10 font-mono">
                  You must mint a Character NFT module to enter the simulation.
                </p>
                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full max-w-4xl">
@@ -413,7 +468,7 @@ export const SpaceAttackGame: React.FC = () => {
                     <div className="flex justify-between items-start mb-8">
                       <div>
                         <h2 className="text-2xl font-black text-white uppercase tracking-tighter mb-1">Simulation Uplink</h2>
-                        <p className="text-slate-500 font-mono text-xs">Confirm active modules for engagement.</p>
+                        <p className="text-slate-500 font-mono text-xs">{activeCharId === 'GUEST_MODULE' ? 'Operating in GUEST_BYPASS mode.' : 'Confirm active modules for engagement.'}</p>
                       </div>
                       <div className="bg-sci-cyan/10 text-sci-cyan border border-sci-cyan/50 px-4 py-1 rounded-full text-[10px] font-black tracking-widest">READY</div>
                     </div>
@@ -426,7 +481,7 @@ export const SpaceAttackGame: React.FC = () => {
                           {CLASSES[currentCharacter.subType as keyof typeof CLASSES]?.icon}
                         </div>
                         <div>
-                          <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">LVL {currentCharacter.level} {currentCharacter.rarity} UNIT</p>
+                          <p className="text-[10px] text-slate-500 font-mono uppercase tracking-widest">{activeCharId === 'GUEST_MODULE' ? 'VIRTUAL GUEST' : `LVL ${currentCharacter.level} ${currentCharacter.rarity} UNIT`}</p>
                           <p className="text-white font-black text-lg uppercase">{currentCharacter.subType}</p>
                         </div>
                       </div>
@@ -457,24 +512,22 @@ export const SpaceAttackGame: React.FC = () => {
                    <ul className="space-y-4 text-xs font-mono text-slate-400">
                      <li className="bg-slate-950 p-4 rounded-xl border border-slate-800">
                        <span className="text-sci-cyan block mb-1">LEVEL SCALING</span>
-                       Stats increase by 10% per level. Your current multiplier: {1 + (currentCharacter.level-1)*0.1}x.
+                       Stats increase by 10% per level. {activeCharId === 'GUEST_MODULE' ? 'Guest modules are locked to Level 1.' : `Your current multiplier: ${1 + (currentCharacter.level-1)*0.1}x.`}
                      </li>
                      <li className="bg-slate-950 p-4 rounded-xl border border-slate-800">
                        <span className="text-sci-cyan block mb-1">XP DISPATCH</span>
-                       Earn +50 XP for Victory, +10 XP for Defeat. Ascending in the Hangar refits your stats but preserves this progress.
+                       Earn +50 XP for Victory, +10 XP for Defeat. {isBypassed && <span className="text-red-400 font-bold">[DISABLED FOR GUESTS]</span>}
                      </li>
                    </ul>
                 </div>
              </div>
            ) : (
              <div className="lg:col-span-12 grid grid-cols-1 lg:grid-cols-12 gap-8 min-h-[600px]">
-                {/* Battlefield View */}
                 <div className="lg:col-span-8 space-y-8">
                    <div className="grid grid-cols-2 gap-8">
-                     {/* Player Status */}
                      <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-4 opacity-5"><User size={64}/></div>
-                        <p className="text-[10px] font-mono text-sci-cyan mb-2 uppercase">Uplink: @{user.username} [LVL {currentCharacter.level}]</p>
+                        <p className="text-[10px] font-mono text-sci-cyan mb-2 uppercase">Uplink: @{user.username} {activeCharId === 'GUEST_MODULE' ? '[GUEST_BYPASS]' : `[LVL ${currentCharacter.level}]`}</p>
                         <h3 className="text-xl font-black text-white mb-4">HULL_INTEGRITY</h3>
                         <div className="w-full bg-slate-950 h-4 rounded-full border border-slate-800 overflow-hidden mb-2">
                            <div 
@@ -485,7 +538,6 @@ export const SpaceAttackGame: React.FC = () => {
                         <p className="text-right font-mono text-xs text-slate-500">{Math.floor(gameState.playerHP)} / {gameState.playerMaxHP} HP</p>
                      </div>
 
-                     {/* Bot Status */}
                      <div className="bg-slate-900 border border-slate-800 p-6 rounded-3xl relative overflow-hidden">
                         <div className="absolute top-0 right-0 p-4 opacity-5"><Cpu size={64}/></div>
                         <p className="text-[10px] font-mono text-red-500 mb-2 uppercase tracking-widest">PROTOCOL_BOT.v{currentCharacter.level}</p>
@@ -540,15 +592,15 @@ export const SpaceAttackGame: React.FC = () => {
                             <>
                               <Trophy size={80} className="text-yellow-400 mx-auto mb-6 animate-bounce" />
                               <h2 className="text-4xl font-black text-white uppercase tracking-tighter mb-4">VICTORY</h2>
-                              <p className="text-sci-cyan font-mono text-sm mb-4">Protocol stabilized. +200 QUEST dispatched.</p>
-                              <p className="text-green-400 font-mono text-lg mb-8">+50 XP RECORDED</p>
+                              <p className="text-sci-cyan font-mono text-sm mb-4">Protocol stabilized. {isBypassed ? '[SIMULATED_BOUNTY]' : '+200 QUEST dispatched.'}</p>
+                              {activeCharId !== 'GUEST_MODULE' && authMethod !== 'MNEMONIC' ? <p className="text-green-400 font-mono text-lg mb-8">+50 XP RECORDED</p> : <p className="text-slate-500 font-mono text-lg mb-8">XP_LINK_DISABLED (GUEST)</p>}
                             </>
                           ) : (
                             <>
                               <AlertTriangle size={80} className="text-red-500 mx-auto mb-6 animate-pulse" />
                               <h2 className="text-4xl font-black text-white uppercase tracking-tighter mb-4">DEFEAT</h2>
                               <p className="text-slate-500 font-mono text-sm mb-4">Signal lost. Integrity compromised.</p>
-                              <p className="text-red-400 font-mono text-lg mb-8">+10 XP RECORDED</p>
+                              {activeCharId !== 'GUEST_MODULE' && authMethod !== 'MNEMONIC' ? <p className="text-red-400 font-mono text-lg mb-8">+10 XP RECORDED</p> : <p className="text-slate-500 font-mono text-lg mb-8">XP_LINK_DISABLED (GUEST)</p>}
                             </>
                           )}
                           <button onClick={() => { setGameState(null); }} className="w-full bg-white text-slate-950 font-black py-4 rounded-xl uppercase tracking-widest shadow-xl hover:scale-[1.05] transition-all">CLOSE LINK</button>

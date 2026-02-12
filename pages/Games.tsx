@@ -1,13 +1,13 @@
-
 import React from 'react';
 import { useChain } from '../context/ChainContext';
-import { Lock, Play, Bomb, Grid, Cpu, Layers, Activity, Crosshair, Sword, MousePointer2, Dice5, Target, Map, Sparkles } from 'lucide-react';
-// Fix: Use standard named import for Link
+import { Lock, Play, Bomb, Grid, Cpu, Layers, Activity, Crosshair, Sword, MousePointer2, Dice5, Target, Map, Sparkles, Zap } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { GAME_PASS_COST } from '../types';
 
 export const Games: React.FC = () => {
-  const { user, buyGamePass } = useChain();
+  const { user, buyGamePass, authMethod } = useChain();
+
+  const isBypassed = authMethod === 'MNEMONIC';
 
   const games = [
     {
@@ -110,11 +110,11 @@ export const Games: React.FC = () => {
             SIMULATION <span className="text-sci-cyan">DECK</span>
           </h1>
           <p className="text-slate-400 font-mono text-sm max-w-2xl">
-            Execute training protocols to earn QUEST tokens. Requires active Gaming Pass.
+            Execute training protocols to earn QUEST tokens. {isBypassed ? <span className="text-sci-cyan font-bold">[SEED_BYPASS_ACTIVE]</span> : 'Requires active Gaming Pass.'}
           </p>
         </div>
         
-        {!user.hasGamePass && (
+        {!user.hasGamePass && !isBypassed && (
           <div className="w-full md:w-auto bg-red-950/20 border border-red-500/50 p-4 rounded-lg flex items-center justify-between md:justify-start">
             <div className="flex items-center">
               <Lock className="text-red-500 mr-3" />
@@ -131,11 +131,21 @@ export const Games: React.FC = () => {
             </button>
           </div>
         )}
+
+        {isBypassed && (
+          <div className="w-full md:w-auto bg-sci-cyan/10 border border-sci-cyan/30 p-4 rounded-lg flex items-center">
+            <Zap className="text-sci-cyan mr-3 animate-pulse" size={20} />
+            <div>
+              <p className="text-sci-cyan font-bold text-sm uppercase">Guest Protocol Uplink</p>
+              <p className="text-sci-cyan/60 text-[10px] font-mono">Bypassing mandatory license requirements</p>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {games.map(game => {
-          const isLocked = !user.hasGamePass;
+          const isLocked = !user.hasGamePass && !isBypassed;
           return (
             <Link 
               to={isLocked ? '#' : game.path}
@@ -148,11 +158,12 @@ export const Games: React.FC = () => {
                     {game.icon}
                   </div>
                   {isLocked && <Lock size={16} className="text-red-500" />}
+                  {isBypassed && !user.hasGamePass && <Zap size={14} className="text-sci-cyan animate-pulse" />}
                 </div>
                 <h3 className="text-xl font-bold text-white mb-3 font-sans group-hover:text-sci-cyan transition-colors">{game.name}</h3>
                 <p className="text-sm text-slate-400 font-mono flex-grow">{game.desc}</p>
                 <div className="mt-6 pt-6 border-t border-slate-800 flex items-center justify-between">
-                  <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">{isLocked ? 'LOCKED' : 'READY'}</span>
+                  <span className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">{isLocked ? 'LOCKED' : isBypassed && !user.hasGamePass ? 'GUEST_ACCESS' : 'READY'}</span>
                   {!isLocked && (
                     <div className="flex items-center text-xs font-bold text-white bg-slate-800 px-3 py-1.5 rounded-full group-hover:bg-sci-cyan group-hover:text-black">
                       <Play size={12} className="mr-1 fill-current" /> EXECUTE

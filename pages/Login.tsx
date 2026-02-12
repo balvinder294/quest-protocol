@@ -1,8 +1,8 @@
+
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
-import { Link2, Cpu, ShieldCheck, AlertCircle, Key, Fingerprint, Copy, CheckCircle, RefreshCw } from 'lucide-react';
+import { Link2, Cpu, ShieldCheck, AlertCircle, Key, Fingerprint, Copy, CheckCircle, RefreshCw, ShieldAlert, AlertTriangle } from 'lucide-react';
 import { validatePostingKeyFormat } from '../services/blurtService';
-
 
 export const Login: React.FC = () => {
   const { login, isLoading } = useChain();
@@ -15,7 +15,10 @@ export const Login: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() && loginMethod !== 'MNEMONIC') return;
+    if (!username.trim()) {
+        alert("Username is required to establish identity link.");
+        return;
+    }
     
     let keyToPass = undefined;
     if (loginMethod === 'POSTING_KEY') {
@@ -32,12 +35,12 @@ export const Login: React.FC = () => {
         keyToPass = mnemonic;
     }
 
-    const res = await login(username.trim() || 'quest_explorer', loginMethod, keyToPass);
+    const res = await login(username.trim(), loginMethod, keyToPass);
     if (!res.success) alert(res.msg);
   };
 
   const generateNewMnemonic = () => {
-    const words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega".split(' ');
+    const words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega nebula pulsar quasar vector matrix vertex logic cipher vault ghost shadow phantom".split(' ');
     const generated = Array(12).fill(0).map(() => words[Math.floor(Math.random() * words.length)]).join(' ');
     setMnemonic(generated);
     setShowMnemonicGen(true);
@@ -63,11 +66,11 @@ export const Login: React.FC = () => {
             </div>
           </div>
           
-          <h2 className="text-2xl font-bold text-center text-white mb-2 font-sans uppercase">
-            Identity Uplink
+          <h2 className="text-2xl font-bold text-center text-white mb-2 font-sans uppercase tracking-tight">
+            Identity <span className="text-sci-cyan">Uplink</span>
           </h2>
-          <p className="text-center text-slate-400 text-sm font-mono mb-8">
-            Select Blurt Authentication Protocol
+          <p className="text-center text-slate-400 text-xs font-mono mb-8 uppercase tracking-widest">
+            Protocol Selection Required
           </p>
 
           <div className="flex bg-slate-950 p-1 rounded-lg border border-slate-800 mb-8 overflow-x-auto">
@@ -81,34 +84,34 @@ export const Login: React.FC = () => {
               onClick={() => setLoginMethod('POSTING_KEY')}
               className={`flex-1 min-w-[100px] py-2 text-[9px] font-black uppercase tracking-widest rounded transition-all ${loginMethod === 'POSTING_KEY' ? 'bg-sci-cyan text-slate-950' : 'text-slate-500 hover:text-white'}`}
             >
-              Posting Key
+              L1 Key
             </button>
             <button 
               onClick={() => setLoginMethod('MNEMONIC')}
               className={`flex-1 min-w-[100px] py-2 text-[9px] font-black uppercase tracking-widest rounded transition-all ${loginMethod === 'MNEMONIC' ? 'bg-sci-cyan text-slate-950' : 'text-slate-500 hover:text-white'}`}
             >
-              SideVault
+              Mnemonic
             </button>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            {loginMethod !== 'MNEMONIC' && (
-              <div>
-                <label className="block text-[10px] font-mono text-sci-cyan mb-2 uppercase tracking-widest">
-                  Blurt Username
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 text-white px-4 py-3 pl-10 rounded focus:border-sci-cyan outline-none font-mono"
-                    placeholder="e.g. username"
-                  />
-                  <Fingerprint className="absolute left-3 top-3.5 w-4 h-4 text-slate-600" />
-                </div>
+            <div>
+              <label className="block text-[10px] font-mono text-sci-cyan mb-2 uppercase tracking-widest">
+                Choose Username
+              </label>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 text-white px-4 py-3 pl-10 rounded focus:border-sci-cyan outline-none font-mono text-sm"
+                  placeholder="e.g. cyber_vanguard"
+                  required
+                />
+                <Fingerprint className="absolute left-3 top-3.5 w-4 h-4 text-slate-600" />
               </div>
-            )}
+              <p className="mt-1.5 text-[8px] text-slate-600 font-mono uppercase">This identity will be recorded on the MongoDB sidechain state.</p>
+            </div>
 
             {loginMethod === 'POSTING_KEY' && (
               <div>
@@ -131,15 +134,27 @@ export const Login: React.FC = () => {
             {loginMethod === 'MNEMONIC' && (
               <div className="space-y-4">
                 {showMnemonicGen ? (
-                  <div className="p-4 bg-slate-950 border border-sci-cyan/30 rounded-lg">
-                    <p className="text-[9px] text-slate-500 font-mono uppercase mb-2">Standalone Sidechain Seed</p>
-                    <p className="text-white font-mono text-xs leading-relaxed mb-4">{mnemonic}</p>
+                  <div className="p-4 bg-slate-950 border border-sci-cyan/30 rounded-lg animate-in fade-in zoom-in duration-300">
+                    <p className="text-[9px] text-sci-cyan font-mono uppercase mb-2 flex items-center">
+                       <ShieldAlert size={10} className="mr-1" /> New Seed Generated
+                    </p>
+                    <p className="text-white font-mono text-xs leading-relaxed mb-4 p-3 bg-black/40 rounded border border-slate-800 selection:bg-sci-cyan selection:text-black">{mnemonic}</p>
+                    
+                    <div className="bg-red-950/20 border border-red-500/30 p-3 rounded-lg mb-4">
+                        <div className="flex items-start space-x-2">
+                            <AlertTriangle size={14} className="text-red-500 mt-0.5 shrink-0" />
+                            <p className="text-[9px] text-red-400 font-mono uppercase leading-tight">
+                                <span className="font-black">CRITICAL:</span> Backup these 12 words immediately. Loss of mnemonic results in permanent loss of Quest assets. There is no password recovery.
+                            </p>
+                        </div>
+                    </div>
+
                     <div className="flex gap-2">
-                       <button type="button" onClick={copyMnemonic} className="flex-1 py-2 bg-slate-800 text-xs font-bold rounded flex items-center justify-center space-x-2">
+                       <button type="button" onClick={copyMnemonic} className="flex-1 py-2 bg-slate-800 text-xs font-bold rounded flex items-center justify-center space-x-2 hover:bg-slate-700 transition">
                           {copied ? <CheckCircle size={14} className="text-green-500" /> : <Copy size={14} />}
                           <span>{copied ? 'COPIED' : 'COPY'}</span>
                        </button>
-                       <button type="button" onClick={() => setShowMnemonicGen(false)} className="flex-1 py-2 bg-sci-cyan text-slate-900 text-xs font-bold rounded">USE SEED</button>
+                       <button type="button" onClick={() => setShowMnemonicGen(false)} className="flex-1 py-2 bg-sci-cyan text-slate-950 text-xs font-bold rounded hover:bg-white transition shadow-lg">FINISH SETUP</button>
                     </div>
                   </div>
                 ) : (
@@ -151,11 +166,14 @@ export const Login: React.FC = () => {
                       value={mnemonic}
                       onChange={(e) => setMnemonic(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-700 text-white px-4 py-3 rounded focus:border-sci-cyan outline-none font-mono h-24 text-xs"
-                      placeholder="word1 word2 ..."
+                      placeholder="Enter 12 words separated by spaces..."
                     />
-                    <button type="button" onClick={generateNewMnemonic} className="mt-2 text-[10px] text-slate-500 hover:text-sci-cyan flex items-center font-mono">
-                      <RefreshCw size={10} className="mr-1" /> Create Standalone Vault
-                    </button>
+                    <div className="flex justify-between items-center mt-2">
+                        <button type="button" onClick={generateNewMnemonic} className="text-[10px] text-slate-500 hover:text-sci-cyan flex items-center font-mono transition">
+                          <RefreshCw size={10} className="mr-1" /> Generate New Seed
+                        </button>
+                        <p className="text-[8px] text-slate-700 font-mono italic">Bypasses L1 verification</p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -164,14 +182,16 @@ export const Login: React.FC = () => {
             <button
               type="submit"
               disabled={isLoading || (loginMethod === 'MNEMONIC' && showMnemonicGen)}
-              className={`w-full bg-sci-cyan hover:bg-cyan-400 text-slate-900 font-black py-4 rounded-xl transition-all flex items-center justify-center space-x-2 shadow-lg ${isLoading ? 'opacity-50' : ''}`}
+              className={`w-full bg-sci-cyan hover:bg-cyan-400 text-slate-900 font-black py-4 rounded-xl transition-all flex items-center justify-center space-x-2 shadow-lg hover:shadow-sci-cyan/20 ${isLoading ? 'opacity-50' : ''}`}
             >
               {isLoading ? (
-                <span className="animate-pulse">SYNCHRONIZING...</span>
+                <span className="animate-pulse flex items-center">
+                    <RefreshCw size={18} className="animate-spin mr-2" /> SYNCHRONIZING_CORE...
+                </span>
               ) : (
                 <>
                   <ShieldCheck size={18} />
-                  <span>{loginMethod === 'WHALEVAULT' ? 'WHALEVAULT LINK' : 'ESTABLISH LINK'}</span>
+                  <span>{loginMethod === 'WHALEVAULT' ? 'WHALEVAULT LINK' : 'ESTABLISH PROTOCOL'}</span>
                 </>
               )}
             </button>
@@ -181,7 +201,7 @@ export const Login: React.FC = () => {
              <div className="flex items-start space-x-3">
                 <AlertCircle size={14} className="text-sci-purple mt-0.5 flex-shrink-0" />
                 <p className="text-[9px] text-slate-500 font-mono leading-relaxed uppercase">
-                  Manual keys are stored in <span className="text-white">Session RAM</span> only. This allows signing sidechain <span className="text-sci-cyan font-bold">QUEST_TX</span> without external extension popups.
+                  Mnemonic accounts use local <span className="text-white font-bold">SHA-256 Entropy</span> to sign <span className="text-sci-cyan">QUEST_TX</span>. They are fully participating blockchain accounts.
                 </p>
              </div>
           </div>

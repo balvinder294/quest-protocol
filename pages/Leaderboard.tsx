@@ -1,65 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { useChain } from '../context/ChainContext';
-import { getDb } from '../services/sqliteService';
-import { Trophy, Medal, Star, Target, User, Cpu, Wallet } from 'lucide-react';
-
-interface RankUser {
-  username: string;
-  balance: number;
-  xp: number;
-}
+import { Trophy, Medal, Star, User, Cpu } from 'lucide-react';
 
 export const Leaderboard: React.FC = () => {
-  const [ranks, setRanks] = useState<RankUser[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { leaderboard, getLeaderboard, chain } = useChain();
 
   useEffect(() => {
-    const fetchData = () => {
-      const db = getDb();
-      if (!db) return;
+    getLeaderboard();
+    const interval = setInterval(getLeaderboard, 30000); // Auto-refresh every 30s
+    return () => clearInterval(interval);
+  }, [chain.blocks.length]);
 
-      try {
-        const res = db.exec(`
-          SELECT u.username, u.balance, IFNULL(SUM(n.xp), 0) as total_xp 
-          FROM users u
-          LEFT JOIN nfts n ON u.username = n.owner
-          GROUP BY u.username
-          ORDER BY u.balance DESC
-          LIMIT 50
-        `);
-
-        if (res && res.length > 0) {
-          const data = res[0].values.map(v => ({
-            username: v[0] as string,
-            balance: v[1] as number,
-            xp: v[2] as number
-          }));
-          setRanks(data);
-        }
-      } catch (e) {
-        console.error("Leaderboard fetch error", e);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, []);
-
-  const topThree = ranks.slice(0, 3);
-  const others = ranks.slice(3);
+  const topThree = leaderboard.slice(0, 3);
+  const others = leaderboard.slice(3);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-12">
       <div className="mb-12 text-center">
         <h1 className="text-4xl font-black text-white mb-2 uppercase tracking-tighter">ELITE <span className="text-sci-cyan">RANKINGS</span></h1>
-        <p className="text-slate-400 font-mono text-sm">Synchronized protocol hierarchy across 50 nodes.</p>
+        <p className="text-slate-400 font-mono text-sm">Synchronized MongoDB protocol hierarchy across the cluster.</p>
       </div>
 
-      {loading ? (
+      {leaderboard.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-20">
           <Cpu size={48} className="text-sci-cyan animate-spin mb-4" />
-          <p className="text-slate-500 font-mono animate-pulse">Aggregating chain data...</p>
+          <p className="text-slate-500 font-mono animate-pulse">Aggregating cluster data...</p>
         </div>
       ) : (
         <div className="space-y-12">

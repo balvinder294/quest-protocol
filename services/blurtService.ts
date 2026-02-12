@@ -1,3 +1,4 @@
+
 // Interacting with Blurt Public Nodes
 const BLURT_RPC_NODES = [
   'https://rpc.blurt.world',
@@ -108,32 +109,36 @@ export const authenticateWithWhaleVault = async (username: string): Promise<{ su
   });
 };
 
+/**
+ * DECOUPLED: Anchoring logic is disabled to remove Blurt chain dependency for block production.
+ */
 export const anchorBlockToBlurt = async (username: string, blockHeader: any): Promise<{ success: boolean; txId?: string; message: string }> => {
+  console.log("[BRIDGE] Anchoring skipped: Sidechain decoupled from Blurt Mainnet.");
+  return { 
+    success: true, 
+    txId: 'decoupled_id_' + Math.random().toString(36).substring(7), 
+    message: 'Local Finality Only' 
+  };
+  
+  /* DEPRECATED:
   const vault = await waitForVault(3000);
   if (!vault) return { success: false, message: 'WhaleVault / Keychain not detected.' };
 
   return new Promise((resolve) => {
     const keyType = "Posting"; 
-    
-    // Discovery logic for various Keychain implementations
     let targetContext = vault;
     let customJson = vault.requestCustomJson || vault.request_custom_json;
 
-    // Check nested objects if top-level methods aren't found
     if (typeof customJson !== 'function' && vault.blurt) {
       targetContext = vault.blurt;
       customJson = vault.blurt.requestCustomJson || vault.blurt.request_custom_json;
     }
 
     if (typeof customJson !== 'function') {
-      return resolve({ success: false, message: 'Extension logic mismatch: requestCustomJson method not found.' });
+      return resolve({ success: false, message: 'Extension logic mismatch.' });
     }
 
     try {
-      /**
-       * Call signature for most Keychain-style extensions:
-       * (username, id, keyType, json, displayName, callback, rpc)
-       */
       customJson.call(
         targetContext,
         username,
@@ -142,19 +147,14 @@ export const anchorBlockToBlurt = async (username: string, blockHeader: any): Pr
         JSON.stringify(blockHeader),
         `Seal Quest Block #${blockHeader.index}`,
         (response: any) => {
-          // Normalize various response formats
           if (response && (response.success === true || response.result)) {
             const txId = (response.result && typeof response.result === 'string') 
               ? response.result 
               : (response.data && response.data.tx_id) || 'verified';
               
-            resolve({ 
-              success: true, 
-              txId: txId, 
-              message: 'Anchored to Blurt Mainnet' 
-            });
+            resolve({ success: true, txId: txId, message: 'Anchored to Blurt Mainnet' });
           } else {
-            const errMsg = response?.message || response?.error || 'User rejected anchoring request';
+            const errMsg = response?.message || response?.error || 'User rejected anchoring';
             resolve({ success: false, message: errMsg });
           }
         }
@@ -163,29 +163,22 @@ export const anchorBlockToBlurt = async (username: string, blockHeader: any): Pr
       resolve({ success: false, message: `Vault Protocol Error: ${e.message}` });
     }
   });
+  */
 };
 
 export const fetchMainnetHistory = async (account: string): Promise<any[]> => {
-  try {
-    const response = await fetch(BLURT_RPC_NODES[0], {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'condenser_api.get_account_history',
-        params: [account, -1, 100],
-        id: 1,
-      }),
-    });
-    const data = await response.json();
-    return data.result || [];
-  } catch (e) {
-    console.error("Mainnet fetch error", e);
-    return [];
-  }
+  // Return empty if we want to remove mainnet sync dependency
+  return [];
 };
 
+/**
+ * DECOUPLED: Verification is skipped. Claims are now instant for simulation.
+ */
 export const verifyBlurtTransaction = async (txId: string, expectedUser: string): Promise<{ success: boolean; amount: number; message: string }> => {
+  console.log("[BRIDGE] Verification decoupled. Simulating deposit verification.");
+  return { success: true, amount: 100, message: 'Verified (Decoupled Mode)' };
+  
+  /* DEPRECATED:
   for (const node of BLURT_RPC_NODES) {
     try {
       const response = await fetch(node, {
@@ -212,4 +205,5 @@ export const verifyBlurtTransaction = async (txId: string, expectedUser: string)
     } catch (e) { continue; }
   }
   return { success: false, amount: 0, message: 'Transaction not found' };
+  */
 };
