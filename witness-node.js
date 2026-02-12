@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.6
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.7
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -25,7 +25,6 @@ let db, client;
 let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
 let activePeers = new Set();
 let isStandalone = false;
-let lastProcessedIndex = 0;
 
 async function initMongo() {
     try {
@@ -41,22 +40,20 @@ async function initMongo() {
         }
 
         if (isStandalone) {
-            console.warn(`[DB] Standalone Mode: Transactions disabled. Using atomic-first sequence.`);
+            console.warn(`[DB] Standalone Mode: Standard processing enabled.`);
         }
 
-        // Core Indexes
+        // Ensure Core Indexes
         await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
         await db.collection('blocks').createIndex({ hash: 1 }, { unique: true });
         await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
-        await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
         await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
-        await db.collection('votes').createIndex({ voter: 1, witness: 1 }, { unique: true });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
         // Genesis setup
         const genesisUser = await db.collection('accounts').findOne({ username: CONFIG.GENESIS_VALIDATOR });
         if (!genesisUser) {
-            console.log(`[INIT] Bootstrapping Genesis: @${CONFIG.GENESIS_VALIDATOR}`);
+            console.log(`[INIT] Provisioning Genesis Validator: @${CONFIG.GENESIS_VALIDATOR}`);
             await db.collection('accounts').insertOne({
                 username: CONFIG.GENESIS_VALIDATOR,
                 balance: 1000000,
@@ -73,14 +70,11 @@ async function initMongo() {
         }
         
         await updateWitnessSchedule();
-        const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
-        lastProcessedIndex = lastBlock ? lastBlock.index : 0;
-
         connectToPeers();
         startProducerLoop();
-        console.log(`[NODE] Quest Engine Online: ${CONFIG.WITNESS_NAME} (Port ${CONFIG.PORT})`);
+        console.log(`[NODE] Quest Protocol v1.8.7 Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
     } catch (e) {
-        console.error(`[CRITICAL] Boot failed: ${e.message}`);
+        console.error(`[CRITICAL] DB Initialization failed: ${e.message}`);
         process.exit(1);
     }
 }
@@ -99,29 +93,31 @@ async function updateWitnessSchedule() {
             currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
         }
     } catch (e) {
-        console.error(`[CONSENSUS] Schedule update error: ${e.message}`);
+        console.error(`[CONSENSUS] Failed to update schedule: ${e.message}`);
     }
 }
 
 async function startProducerLoop() {
     setInterval(async () => {
         try {
+            // Find latest block to determine current turn
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
             
+            // DPoS Round Robin check
             const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
             const currentWitness = currentWitnessSchedule[scheduleIndex];
 
             if (currentWitness === CONFIG.WITNESS_NAME) {
-                // Double check if we already processed this index via P2P while waiting for timer
-                const collision = await db.collection('blocks').findOne({ index: nextIndex });
-                if (collision) return;
+                // Final race condition check: has this index been filled while waiting?
+                const raceCheck = await db.collection('blocks').findOne({ index: nextIndex });
+                if (raceCheck) return;
 
-                console.log(`[PRODUCER] My Turn: Assembling Block #${nextIndex}`);
+                console.log(`[PRODUCER] My turn for Block #${nextIndex}. Producing...`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {
-            console.error(`[PRODUCER] Production loop error: ${e.message}`);
+            console.error(`[PRODUCER] Loop Error: ${e.message}`);
         }
     }, 3000);
 }
@@ -132,7 +128,7 @@ async function produceBlock(index, prevHash) {
     const blockHeader = {
         index,
         previousHash: prevHash,
-        merkleRoot: '0',
+        merkleRoot: '0', // In production, calculateMerkleRoot(pendingTxs)
         timestamp: Date.now(),
         validator: CONFIG.WITNESS_NAME,
         chainId: CONFIG.CHAIN_ID,
@@ -144,25 +140,27 @@ async function produceBlock(index, prevHash) {
 
     const success = await processIncomingBlock(block);
     if (success) {
-        console.log(`[PRODUCER] Block #${index} Signed and Dispatched`);
+        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}...]`);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
 
 async function processIncomingBlock(block) {
-    // 1. Quick check
-    const exists = await db.collection('blocks').findOne({ 
-        $or: [{ index: block.index }, { hash: block.hash }] 
-    });
-    
-    if (exists) {
-        // If it's identical, it's a redundant broadcast, not an error
-        if (exists.hash === block.hash) return true; 
-        console.warn(`[BLOCK] Conflict at #${block.index}: Peer Hash ${block.hash.substring(0,8)} != Local ${exists.hash.substring(0,8)}`);
+    if (!block || !block.index) return false;
+
+    // 1. Existing Block Check
+    const existing = await db.collection('blocks').findOne({ index: block.index });
+    if (existing) {
+        if (existing.hash === block.hash) return true; // Redundant P2P message
+        console.warn(`[BLOCK] Conflict at #${block.index}. Rejected: Local ${existing.hash.substring(0,8)} Peer ${block.hash.substring(0,8)}`);
         return false;
     }
 
-    // 2. Linearize processing to prevent concurrent DB state mutation issues
+    // 2. Hash Consistency Check (Optional but recommended)
+    // const last = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+    // if (last && block.previousHash !== last.hash && block.index > 1) return false;
+
+    // 3. Execution
     if (!isStandalone) {
         const session = client.startSession();
         try {
@@ -170,47 +168,35 @@ async function processIncomingBlock(block) {
                 await executeBlockLogic(block, session);
             });
             await updateWitnessSchedule();
-            lastProcessedIndex = block.index;
             return true;
         } catch (e) {
-            if (e.code !== 11000) console.error(`[BLOCK] Tx Error: ${e.message}`);
-            return e.code === 11000; // Success if someone beat us to it
+            if (e.code !== 11000) console.error(`[BLOCK] Transaction failed: ${e.message}`);
+            return e.code === 11000;
         } finally {
             await session.endSession();
         }
     } else {
         try {
-            // In standalone, we insert block first as an atomic lock
-            const blockData = { ...block };
-            delete blockData._id;
-            await db.collection('blocks').insertOne(blockData);
-            
-            // Then execute state changes
-            await executeBlockLogic(block, null, true); // skipBlockInsert=true
+            // Linear Normal Mode
+            await executeBlockLogic(block, null);
             await updateWitnessSchedule();
-            lastProcessedIndex = block.index;
             return true;
         } catch (e) {
-            if (e.code === 11000) {
-                const check = await db.collection('blocks').findOne({ index: block.index });
-                return check && check.hash === block.hash;
-            }
-            console.error(`[BLOCK] Linear Error: ${e.message}`);
+            if (e.code === 11000) return true;
+            console.error(`[BLOCK] Linear processing failed: ${e.message}`);
             return false;
         }
     }
 }
 
-async function executeBlockLogic(block, session, skipBlockInsert = false) {
+async function executeBlockLogic(block, session) {
     const opts = session ? { session } : {};
+    const blockData = { ...block };
+    delete blockData._id; // Ensure MongoDB doesn't conflict on internal ID
     
-    if (!skipBlockInsert) {
-        const blockData = { ...block };
-        delete blockData._id;
-        await db.collection('blocks').insertOne(blockData, opts);
-    }
+    await db.collection('blocks').insertOne(blockData, opts);
     
-    if (block.transactions) {
+    if (block.transactions && Array.isArray(block.transactions)) {
         for (const tx of block.transactions) {
             try {
                 if (tx.type === 'TRANSFER') {
@@ -231,11 +217,12 @@ async function executeBlockLogic(block, session, skipBlockInsert = false) {
                 }
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
             } catch (txError) {
-                console.error(`[TX] Failed ${tx.id}: ${txError.message}`);
+                console.error(`[TX] Error ${tx.id}: ${txError.message}`);
             }
         }
     }
     
+    // Validator Reward
     await db.collection('accounts').updateOne(
         { username: block.validator }, 
         { $inc: { balance: 50 } }, 
@@ -269,6 +256,9 @@ async function handleRPC(rpc, ws) {
     if (!rpc || !rpc.type) return;
 
     switch (rpc.type) {
+        case 'PING':
+            ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
+            break;
         case 'GET_BLOCKS':
             const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(50).toArray();
             ws.send(JSON.stringify({ 
@@ -278,24 +268,19 @@ async function handleRPC(rpc, ws) {
                 currentWitness: currentWitnessSchedule[(blocks.length) % currentWitnessSchedule.length]
             }));
             break;
-
         case 'QUERY_STATE':
             let user = await db.collection('accounts').findOne({ username: rpc.username });
             if (!user) {
                 user = { username: rpc.username, balance: 0, staked: 0, has_pass: false, is_admin: false, last_mana_sync: Date.now() };
                 await db.collection('accounts').insertOne(user);
             }
-            const nfts = await db.collection('nfts').find({ owner: rpc.username }).toArray();
+            const nfts = await db.collection('nfts') ? await db.collection('nfts').find({ owner: rpc.username }).toArray() : [];
             ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user, inventory: nfts }));
             break;
-
         case 'NEW_BLOCK':
             const success = await processIncomingBlock(rpc.block);
-            if (success) {
-                broadcast(rpc, ws); // Gossip to other peers
-            }
+            if (success) broadcast(rpc, ws);
             break;
-
         case 'PUSH_TX':
             if (rpc.tx) {
                 const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
@@ -305,15 +290,12 @@ async function handleRPC(rpc, ws) {
                 }
             }
             break;
-        case 'PING':
-            ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
-            break;
     }
 }
 
 function connectToPeers() {
     CONFIG.PEER_URLS.forEach(url => {
-        if (!url || url.includes(`localhost:${CONFIG.PORT}`)) return;
+        if (!url || url.includes(`:${CONFIG.PORT}`)) return;
         try {
             const ws = new WebSocket(url);
             ws.on('open', () => {
@@ -328,7 +310,7 @@ function connectToPeers() {
             });
             ws.on('close', () => {
                 activePeers.delete(ws);
-                setTimeout(() => connectToPeers(), 5000);
+                setTimeout(() => connectToPeers(), 10000);
             });
             ws.on('error', () => {});
         } catch (e) {}

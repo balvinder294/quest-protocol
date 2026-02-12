@@ -1,14 +1,29 @@
 
-// Simple hash function for simulation (not secure for real crypto)
+// Improved hash function for simulation to prevent collisions in multi-node environments
 export const simpleHash = (data) => {
-  let hash = 0;
-  if (data.length === 0) return '00000000';
+  if (!data || data.length === 0) return '0'.repeat(64);
+  
+  // Multi-pass hash to fill more of the 64-character space
+  let h1 = 0x811c9dc5;
+  let h2 = 0xdeadbeef;
+  
   for (let i = 0; i < data.length; i++) {
     const char = data.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
+    h1 = Math.imul(h1 ^ char, 16777619);
+    h2 = Math.imul(h2 ^ char, 0x5bd1e995);
   }
-  return Math.abs(hash).toString(16).padStart(64, '0'); // Pad to look like sha256
+  
+  // Mix them
+  h1 ^= h1 >>> 16;
+  h2 ^= h2 >>> 16;
+  
+  const part1 = (h1 >>> 0).toString(16).padStart(8, '0');
+  const part2 = (h2 >>> 0).toString(16).padStart(8, '0');
+  const part3 = (Math.imul(h1, h2) >>> 0).toString(16).padStart(8, '0');
+  const part4 = (Math.abs(h1 - h2) >>> 0).toString(16).padStart(8, '0');
+  
+  // Construct a 64-char string by repeating/mixing
+  return (part1 + part2 + part3 + part4).padEnd(64, part1).substring(0, 64);
 };
 
 export const generateId = () => {
@@ -16,7 +31,7 @@ export const generateId = () => {
 };
 
 export const calculateMerkleRoot = (transactions) => {
-  if (transactions.length === 0) return simpleHash('empty_block');
+  if (!transactions || transactions.length === 0) return simpleHash('empty_block');
   const txHashes = transactions.map(tx => simpleHash(JSON.stringify(tx)));
   
   let level = txHashes;
