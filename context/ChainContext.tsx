@@ -130,7 +130,6 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         isAdmin: msg.user.is_admin || false,
                         inventory: msg.inventory || []
                     }));
-                    setMyBets(msg.bets || []);
                 }
                 break;
             case 'BLOCK_DATA':
@@ -193,8 +192,6 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setIsLoading(true);
     try {
       const username = input.startsWith(ADMIN_PREFIX) ? input.substring(1).toLowerCase().trim() : input.toLowerCase().trim();
-      
-      // Mnemonic accounts bypass Blurt account check because they are native to sidechain
       let verified = method === 'MNEMONIC' || await checkBlurtAccount(username);
       
       if (verified) {
@@ -249,15 +246,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const voteForWitness = (witness: string) => {
     if (!user.username) return;
-    const tx: Transaction = { 
-        id: `vote_${generateId()}`, 
-        from: user.username, 
-        to: witness, 
-        amount: 0, 
-        type: 'VOTE', 
-        timestamp: Date.now(), 
-        memo: `Voted for ${witness}` 
-    };
+    const tx: Transaction = { id: `vote_${generateId()}`, from: user.username, to: witness, amount: 0, type: 'VOTE', timestamp: Date.now(), memo: `Voted for ${witness}` };
     if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'PUSH_TX', tx }));
     }
@@ -283,7 +272,6 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!user.username || user.balance < amount) return;
     const currentDrawId = chain.blocks.length + 1;
     sendTransaction('PROTOCOL_TREASURY', amount, `Bet Draw #${currentDrawId}`);
-    wsRef.current?.send(JSON.stringify({ type: 'PLACE_BET', username: user.username, number: num, amount, draw_id: currentDrawId }));
   };
 
   const getLeaderboard = () => wsRef.current?.send(JSON.stringify({ type: 'GET_LEADERBOARD' }));
@@ -351,7 +339,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     try {
       const text = await file.text();
       const data = JSON.parse(text);
-      alert("Snapshot data received. Node database update required.");
+      alert("Snapshot received. Deployment requires manual node reset.");
     } catch (e) { alert("Failed to read snapshot file."); }
   };
 
