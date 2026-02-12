@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.7
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.8
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -23,7 +23,8 @@ const CONFIG = {
 
 let db, client;
 let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
-let activePeers = new Set();
+let activePeers = new Map(); // URL -> WebSocket
+let pendingConnections = new Set();
 let isStandalone = false;
 
 async function initMongo() {
@@ -39,9 +40,7 @@ async function initMongo() {
             isStandalone = true;
         }
 
-        if (isStandalone) {
-            console.warn(`[DB] Standalone Mode: Standard processing enabled.`);
-        }
+        console.log(`[DB] Mode: ${isStandalone ? 'Standalone (Standard)' : 'ReplicaSet (Transactions)'}`);
 
         // Ensure Core Indexes
         await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
@@ -53,7 +52,7 @@ async function initMongo() {
         // Genesis setup
         const genesisUser = await db.collection('accounts').findOne({ username: CONFIG.GENESIS_VALIDATOR });
         if (!genesisUser) {
-            console.log(`[INIT] Provisioning Genesis Validator: @${CONFIG.GENESIS_VALIDATOR}`);
+            console.log(`[INIT] Bootstrapping Genesis State...`);
             await db.collection('accounts').insertOne({
                 username: CONFIG.GENESIS_VALIDATOR,
                 balance: 1000000,
@@ -70,11 +69,15 @@ async function initMongo() {
         }
         
         await updateWitnessSchedule();
-        connectToPeers();
+        CONFIG.PEER_URLS.forEach(url => connectToPeer(url.trim()));
         startProducerLoop();
-        console.log(`[NODE] Quest Protocol v1.8.7 Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
+        
+        // Start Heartbeat
+        setInterval(checkConnections, 30000);
+        
+        console.log(`[NODE] Quest Protocol v1.8.8 Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
     } catch (e) {
-        console.error(`[CRITICAL] DB Initialization failed: ${e.message}`);
+        console.error(`[CRITICAL] Boot Error: ${e.message}`);
         process.exit(1);
     }
 }
@@ -87,37 +90,33 @@ async function updateWitnessSchedule() {
             .limit(CONFIG.MAX_WITNESSES)
             .toArray();
 
-        if (topWitnesses.length > 0) {
-            currentWitnessSchedule = topWitnesses.map(w => w.username);
-        } else {
-            currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
-        }
+        currentWitnessSchedule = topWitnesses.length > 0 
+            ? topWitnesses.map(w => w.username) 
+            : [CONFIG.GENESIS_VALIDATOR];
     } catch (e) {
-        console.error(`[CONSENSUS] Failed to update schedule: ${e.message}`);
+        console.error(`[CONSENSUS] Schedule Error: ${e.message}`);
     }
 }
 
-async function startProducerLoop() {
+function startProducerLoop() {
     setInterval(async () => {
         try {
-            // Find latest block to determine current turn
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
             
-            // DPoS Round Robin check
             const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
             const currentWitness = currentWitnessSchedule[scheduleIndex];
 
             if (currentWitness === CONFIG.WITNESS_NAME) {
-                // Final race condition check: has this index been filled while waiting?
-                const raceCheck = await db.collection('blocks').findOne({ index: nextIndex });
-                if (raceCheck) return;
+                // Pre-production check
+                const collision = await db.collection('blocks').findOne({ index: nextIndex });
+                if (collision) return;
 
-                console.log(`[PRODUCER] My turn for Block #${nextIndex}. Producing...`);
+                console.log(`[PRODUCER] My Turn | Block #${nextIndex}`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {
-            console.error(`[PRODUCER] Loop Error: ${e.message}`);
+            console.error(`[PRODUCER] Runtime Error: ${e.message}`);
         }
     }, 3000);
 }
@@ -128,7 +127,7 @@ async function produceBlock(index, prevHash) {
     const blockHeader = {
         index,
         previousHash: prevHash,
-        merkleRoot: '0', // In production, calculateMerkleRoot(pendingTxs)
+        merkleRoot: '0',
         timestamp: Date.now(),
         validator: CONFIG.WITNESS_NAME,
         chainId: CONFIG.CHAIN_ID,
@@ -140,7 +139,7 @@ async function produceBlock(index, prevHash) {
 
     const success = await processIncomingBlock(block);
     if (success) {
-        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}...]`);
+        console.log(`[PRODUCER] Sealed #${index} [${hash.substring(0,8)}]`);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
@@ -148,19 +147,14 @@ async function produceBlock(index, prevHash) {
 async function processIncomingBlock(block) {
     if (!block || !block.index) return false;
 
-    // 1. Existing Block Check
+    // 1. Conflict Check
     const existing = await db.collection('blocks').findOne({ index: block.index });
     if (existing) {
-        if (existing.hash === block.hash) return true; // Redundant P2P message
-        console.warn(`[BLOCK] Conflict at #${block.index}. Rejected: Local ${existing.hash.substring(0,8)} Peer ${block.hash.substring(0,8)}`);
-        return false;
+        if (existing.hash === block.hash) return true; // Just a duplicate message
+        return false; // Real fork conflict
     }
 
-    // 2. Hash Consistency Check (Optional but recommended)
-    // const last = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
-    // if (last && block.previousHash !== last.hash && block.index > 1) return false;
-
-    // 3. Execution
+    // 2. State Mutation
     if (!isStandalone) {
         const session = client.startSession();
         try {
@@ -170,20 +164,20 @@ async function processIncomingBlock(block) {
             await updateWitnessSchedule();
             return true;
         } catch (e) {
-            if (e.code !== 11000) console.error(`[BLOCK] Transaction failed: ${e.message}`);
-            return e.code === 11000;
+            if (e.code === 11000) return true;
+            console.error(`[BLOCK] Tx Failed: ${e.message}`);
+            return false;
         } finally {
             await session.endSession();
         }
     } else {
         try {
-            // Linear Normal Mode
             await executeBlockLogic(block, null);
             await updateWitnessSchedule();
             return true;
         } catch (e) {
             if (e.code === 11000) return true;
-            console.error(`[BLOCK] Linear processing failed: ${e.message}`);
+            console.error(`[BLOCK] Linear Failed: ${e.message}`);
             return false;
         }
     }
@@ -192,7 +186,7 @@ async function processIncomingBlock(block) {
 async function executeBlockLogic(block, session) {
     const opts = session ? { session } : {};
     const blockData = { ...block };
-    delete blockData._id; // Ensure MongoDB doesn't conflict on internal ID
+    delete blockData._id; // Essential for P2P sync
     
     await db.collection('blocks').insertOne(blockData, opts);
     
@@ -216,18 +210,11 @@ async function executeBlockLogic(block, session) {
                     await recalculateWitnessWeight(tx.to, session);
                 }
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
-            } catch (txError) {
-                console.error(`[TX] Error ${tx.id}: ${txError.message}`);
-            }
+            } catch (txError) { }
         }
     }
     
-    // Validator Reward
-    await db.collection('accounts').updateOne(
-        { username: block.validator }, 
-        { $inc: { balance: 50 } }, 
-        { ...opts, upsert: true }
-    );
+    await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
 }
 
 async function recalculateWitnessWeight(witnessName, session) {
@@ -244,6 +231,8 @@ async function recalculateWitnessWeight(witnessName, session) {
 const wss = new WebSocketServer({ port: CONFIG.PORT });
 
 wss.on('connection', (ws) => {
+    ws.isAlive = true;
+    ws.on('pong', () => { ws.isAlive = true; });
     ws.on('message', async (data) => {
         try {
             const rpc = JSON.parse(data.toString());
@@ -260,7 +249,7 @@ async function handleRPC(rpc, ws) {
             ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
             break;
         case 'GET_BLOCKS':
-            const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(50).toArray();
+            const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(100).toArray();
             ws.send(JSON.stringify({ 
                 type: 'BLOCK_DATA', 
                 blocks, 
@@ -274,53 +263,62 @@ async function handleRPC(rpc, ws) {
                 user = { username: rpc.username, balance: 0, staked: 0, has_pass: false, is_admin: false, last_mana_sync: Date.now() };
                 await db.collection('accounts').insertOne(user);
             }
-            const nfts = await db.collection('nfts') ? await db.collection('nfts').find({ owner: rpc.username }).toArray() : [];
-            ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user, inventory: nfts }));
+            ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user }));
             break;
         case 'NEW_BLOCK':
-            const success = await processIncomingBlock(rpc.block);
-            if (success) broadcast(rpc, ws);
+            if (await processIncomingBlock(rpc.block)) broadcast(rpc, ws);
             break;
         case 'PUSH_TX':
-            if (rpc.tx) {
-                const exists = await db.collection('transactions').findOne({ id: rpc.tx.id });
-                if (!exists) {
-                    await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
-                    broadcast(rpc, ws);
-                }
+            if (rpc.tx && !(await db.collection('transactions').findOne({ id: rpc.tx.id }))) {
+                await db.collection('transactions').insertOne({ ...rpc.tx, block_index: null });
+                broadcast(rpc, ws);
             }
             break;
     }
 }
 
-function connectToPeers() {
-    CONFIG.PEER_URLS.forEach(url => {
-        if (!url || url.includes(`:${CONFIG.PORT}`)) return;
-        try {
-            const ws = new WebSocket(url);
-            ws.on('open', () => {
-                console.log(`[P2P] Linked: ${url}`);
-                activePeers.add(ws);
-                ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
-            });
-            ws.on('message', (data) => {
-                try {
-                    handleRPC(JSON.parse(data.toString()), ws);
-                } catch(e) {}
-            });
-            ws.on('close', () => {
-                activePeers.delete(ws);
-                setTimeout(() => connectToPeers(), 10000);
-            });
-            ws.on('error', () => {});
-        } catch (e) {}
-    });
+function connectToPeer(url) {
+    if (!url || activePeers.has(url) || pendingConnections.has(url)) return;
+    if (url.includes(`:${CONFIG.PORT}`)) return;
+
+    pendingConnections.add(url);
+    try {
+        const ws = new WebSocket(url);
+        ws.on('open', () => {
+            console.log(`[P2P] Established: ${url}`);
+            pendingConnections.delete(url);
+            activePeers.set(url, ws);
+            ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
+        });
+        ws.on('message', (data) => {
+            try { handleRPC(JSON.parse(data.toString()), ws); } catch(e) {}
+        });
+        ws.on('close', () => {
+            console.log(`[P2P] Lost: ${url}`);
+            activePeers.delete(url);
+            pendingConnections.delete(url);
+            setTimeout(() => connectToPeer(url), 10000);
+        });
+        ws.on('error', () => {
+            pendingConnections.delete(url);
+        });
+    } catch (e) {
+        pendingConnections.delete(url);
+    }
 }
 
 function broadcast(data, excludeWs) {
     const msg = JSON.stringify(data);
     wss.clients.forEach(c => { if (c !== excludeWs && c.readyState === WebSocket.OPEN) c.send(msg); });
     activePeers.forEach(p => { if (p !== excludeWs && p.readyState === WebSocket.OPEN) p.send(msg); });
+}
+
+function checkConnections() {
+    wss.clients.forEach(ws => {
+        if (!ws.isAlive) return ws.terminate();
+        ws.isAlive = false;
+        ws.ping();
+    });
 }
 
 initMongo();
