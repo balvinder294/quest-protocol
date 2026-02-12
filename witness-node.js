@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.4
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.5
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -21,6 +21,11 @@ const CONFIG = {
     DEFAULT_NODES: ['tekraze', 'kamranrkploy', 'node_gamma'],
     CHAIN_ID: 'quest_mainnet_v1'
 };
+
+// P2P Deduplication Caches to prevent broadcast storms / OOM
+const SEEN_TX_IDS = new Set();
+const SEEN_BLOCK_HASHES = new Set();
+const CACHE_LIMIT = 5000;
 
 let db, client;
 let currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
@@ -49,48 +54,19 @@ async function initMongo() {
         await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
         await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
         await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
-        await db.collection('nfts').createIndex({ owner: 1 });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
-        // Provisioning Genesis Accounts and Witness Passes
+        // Provisioning Genesis Accounts
         for (const nodeName of CONFIG.DEFAULT_NODES) {
             const exists = await db.collection('accounts').findOne({ username: nodeName });
-            
             if (!exists) {
-                console.log(`[INIT] Provisioning Default Account: @${nodeName}`);
                 await db.collection('accounts').insertOne({
-                    username: nodeName,
-                    balance: 100000,
-                    staked: 10000,
-                    has_pass: true,
-                    is_admin: nodeName === 'tekraze',
-                    last_mana_sync: Date.now()
-                });
-            } else if (exists.balance === 0) {
-                await db.collection('accounts').updateOne({ username: nodeName }, { $set: { balance: 100000, has_pass: true } });
-            }
-
-            const hasNft = await db.collection('nfts').findOne({ owner: nodeName, subType: 'NODE_PASS' });
-            if (!hasNft) {
-                await db.collection('nfts').insertOne({ 
-                    id: `nft_genesis_${nodeName}`, 
-                    owner: nodeName, 
-                    type: 'ACCESS', 
-                    subType: 'NODE_PASS', 
-                    rarity: 'EPIC', 
-                    level: 1, 
-                    xp: 0, 
-                    value: 0 
+                    username: nodeName, balance: 100000, staked: 10000, has_pass: true, is_admin: nodeName === 'tekraze', last_mana_sync: Date.now()
                 });
             }
-
             const statsExists = await db.collection('witness_stats').findOne({ username: nodeName });
             if (!statsExists) {
-                await db.collection('witness_stats').insertOne({
-                    username: nodeName,
-                    total_votes: 10000,
-                    last_update: Date.now()
-                });
+                await db.collection('witness_stats').insertOne({ username: nodeName, total_votes: 10000, last_update: Date.now() });
             }
         }
         
@@ -98,31 +74,33 @@ async function initMongo() {
         CONFIG.PEER_URLS.forEach(url => connectToPeer(url.trim()));
         startProducerLoop();
         setInterval(checkConnections, 30000);
+        setInterval(cleanupCaches, 60000); // Prevent Set growth
         
-        console.log(`[NODE] Quest Protocol v1.9.4 Online: @${CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] Quest Protocol v1.9.5 [DEDUP_ACTIVE]: @${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error(`[CRITICAL] Boot Error: ${e.message}`);
         process.exit(1);
     }
 }
 
+function cleanupCaches() {
+    if (SEEN_TX_IDS.size > CACHE_LIMIT) {
+        const arr = Array.from(SEEN_TX_IDS);
+        SEEN_TX_IDS.clear();
+        arr.slice(-1000).forEach(id => SEEN_TX_IDS.add(id));
+    }
+    if (SEEN_BLOCK_HASHES.size > CACHE_LIMIT) {
+        const arr = Array.from(SEEN_BLOCK_HASHES);
+        SEEN_BLOCK_HASHES.clear();
+        arr.slice(-1000).forEach(h => SEEN_BLOCK_HASHES.add(h));
+    }
+}
+
 async function updateWitnessSchedule() {
     try {
-        // Deterministic sort for turn consistency across the cluster
-        const topWitnesses = await db.collection('witness_stats')
-            .find({})
-            .sort({ total_votes: -1, username: 1 }) 
-            .limit(CONFIG.MAX_WITNESSES)
-            .toArray();
-
-        if (topWitnesses.length > 0) {
-            currentWitnessSchedule = topWitnesses.map(w => w.username);
-        } else {
-            currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
-        }
-    } catch (e) {
-        console.error(`[CONSENSUS] Schedule Sync Error: ${e.message}`);
-    }
+        const topWitnesses = await db.collection('witness_stats').find({}).sort({ total_votes: -1, username: 1 }).limit(CONFIG.MAX_WITNESSES).toArray();
+        currentWitnessSchedule = topWitnesses.length > 0 ? topWitnesses.map(w => w.username) : [CONFIG.GENESIS_VALIDATOR];
+    } catch (e) {}
 }
 
 function startProducerLoop() {
@@ -130,15 +108,12 @@ function startProducerLoop() {
         try {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
-            
             const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
             const scheduledWitness = currentWitnessSchedule[scheduleIndex];
 
             if (scheduledWitness === CONFIG.WITNESS_NAME) {
                 const collision = await db.collection('blocks').findOne({ index: nextIndex });
                 if (collision) return;
-
-                console.log(`[DPoS] My Turn: Producing Block #${nextIndex}`);
                 await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
             }
         } catch (e) {}
@@ -147,57 +122,43 @@ function startProducerLoop() {
 
 async function produceBlock(index, prevHash) {
     const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
-    
-    const blockHeader = {
-        index,
-        previousHash: prevHash,
-        merkleRoot: '0',
-        timestamp: Date.now(),
-        validator: CONFIG.WITNESS_NAME,
-        chainId: CONFIG.CHAIN_ID,
-        transactions: pendingTxs
-    };
-    
+    const blockHeader = { index, previousHash: prevHash, merkleRoot: '0', timestamp: Date.now(), validator: CONFIG.WITNESS_NAME, chainId: CONFIG.CHAIN_ID, transactions: pendingTxs };
     const hash = simpleHash(JSON.stringify(blockHeader));
     const block = { ...blockHeader, hash };
     
     if (await processIncomingBlock(block)) {
-        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}]`);
+        console.log(`[PRODUCER] Block #${index} Sealed`);
+        SEEN_BLOCK_HASHES.add(hash);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
 
 async function processIncomingBlock(block) {
-    if (!block || !block.index) return false;
-    
+    if (!block || !block.hash) return false;
+    if (SEEN_BLOCK_HASHES.has(block.hash)) return true;
+
     const existing = await db.collection('blocks').findOne({ index: block.index });
     if (existing) {
+        SEEN_BLOCK_HASHES.add(existing.hash);
         return existing.hash === block.hash;
     }
 
-    if (!isStandalone) {
-        const session = client.startSession();
-        try {
-            await session.withTransaction(async () => {
-                await executeBlockLogic(block, session);
-            });
-            await updateWitnessSchedule();
-            return true;
-        } catch (e) {
-            if (e.code === 11000) return true; // Graceful race condition loss
-            console.error(`[BLOCK] Logic Error: ${e.message}`);
-            return false;
-        } finally {
-            await session.endSession();
-        }
-    } else {
-        try {
+    const session = !isStandalone ? client.startSession() : null;
+    try {
+        if (session) {
+            await session.withTransaction(async () => { await executeBlockLogic(block, session); });
+        } else {
             await executeBlockLogic(block, null);
-            await updateWitnessSchedule();
-            return true;
-        } catch (e) {
-            return e.code === 11000;
         }
+        SEEN_BLOCK_HASHES.add(block.hash);
+        await updateWitnessSchedule();
+        return true;
+    } catch (e) {
+        if (e.code === 11000) return true;
+        console.error(`[BLOCK] Logic Error: ${e.message}`);
+        return false;
+    } finally {
+        if (session) await session.endSession();
     }
 }
 
@@ -205,13 +166,11 @@ async function executeBlockLogic(block, session) {
     const opts = session ? { session } : {};
     const blockData = { ...block };
     delete blockData._id; 
-    
     await db.collection('blocks').insertOne(blockData, opts);
     
     if (block.transactions && Array.isArray(block.transactions)) {
         for (const tx of block.transactions) {
             try {
-                // Token Movement Logic
                 if (tx.type === 'TRANSFER' || tx.type === 'MINT' || tx.type === 'REWARD') {
                     await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
                     await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
@@ -224,24 +183,9 @@ async function executeBlockLogic(block, session) {
                     await db.collection('votes').updateOne({ voter: tx.from }, { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, { ...opts, upsert: true });
                     await recalculateWitnessWeight(tx.to, session);
                 }
-
-                // NFT & Memo Parsing
-                if (tx.memo) {
-                    if (tx.memo === 'Game Pass') {
-                        await db.collection('accounts').updateOne({ username: tx.from }, { $set: { has_pass: true } }, opts);
-                        await db.collection('nfts').updateOne({ id: `pass_${generateId()}` }, { $set: { owner: tx.from, type: 'ACCESS', subType: 'GAME_PASS', rarity: 'RARE', level: 1, xp: 0, value: 0 } }, { ...opts, upsert: true });
-                    } else if (tx.memo === 'Node Pass') {
-                        await db.collection('nfts').updateOne({ id: `node_${generateId()}` }, { $set: { owner: tx.from, type: 'ACCESS', subType: 'NODE_PASS', rarity: 'EPIC', level: 1, xp: 0, value: 0 } }, { ...opts, upsert: true });
-                    }
-                }
-                
-                // Finalize transaction in block with upsert to prevent index collision
-                await db.collection('transactions').updateOne(
-                    { id: tx.id },
-                    { $set: { ...tx, block_index: block.index } },
-                    { ...opts, upsert: true }
-                );
-            } catch (err) { }
+                await db.collection('transactions').updateOne({ id: tx.id }, { $set: { ...tx, block_index: block.index } }, { ...opts, upsert: true });
+                SEEN_TX_IDS.add(tx.id);
+            } catch (err) {}
         }
     }
     await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
@@ -275,12 +219,7 @@ async function handleRPC(rpc, ws) {
             break;
         case 'GET_BLOCKS':
             const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(100).toArray();
-            ws.send(JSON.stringify({ 
-                type: 'BLOCK_DATA', 
-                blocks, 
-                witnesses: currentWitnessSchedule, 
-                currentWitness: currentWitnessSchedule[blocks.length % currentWitnessSchedule.length] 
-            }));
+            ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: currentWitnessSchedule[blocks.length % currentWitnessSchedule.length] }));
             break;
         case 'QUERY_STATE':
             let user = await db.collection('accounts').findOne({ username: rpc.username });
@@ -292,26 +231,17 @@ async function handleRPC(rpc, ws) {
             ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user, inventory }));
             break;
         case 'NEW_BLOCK':
-            if (await processIncomingBlock(rpc.block)) broadcast(rpc, ws);
+            if (rpc.block && !SEEN_BLOCK_HASHES.has(rpc.block.hash)) {
+                if (await processIncomingBlock(rpc.block)) broadcast(rpc, ws);
+            }
             break;
         case 'PUSH_TX':
-            if (rpc.tx && rpc.tx.id) {
+            if (rpc.tx && rpc.tx.id && !SEEN_TX_IDS.has(rpc.tx.id)) {
+                SEEN_TX_IDS.add(rpc.tx.id);
                 try {
-                    // ATOMIC UPSERT: Replaces findOne + insertOne to prevent E11000 duplicate key errors
-                    const result = await db.collection('transactions').updateOne(
-                        { id: rpc.tx.id },
-                        { $setOnInsert: { ...rpc.tx, block_index: null } },
-                        { upsert: true }
-                    );
-                    
-                    // Only broadcast if we actually inserted a new transaction
-                    if (result.upsertedCount > 0) {
-                        broadcast(rpc, ws);
-                    }
-                } catch (e) {
-                    // Fail silently for duplicate keys as they are normal in P2P propagation
-                    if (e.code !== 11000) console.error(`[RPC] PUSH_TX Critical Error: ${e.message}`);
-                }
+                    const result = await db.collection('transactions').updateOne({ id: rpc.tx.id }, { $setOnInsert: { ...rpc.tx, block_index: null } }, { upsert: true });
+                    if (result.upsertedCount > 0) broadcast(rpc, ws);
+                } catch (e) {}
             }
             break;
     }
@@ -319,7 +249,6 @@ async function handleRPC(rpc, ws) {
 
 function connectToPeer(url) {
     if (!url || activePeers.has(url) || pendingConnections.has(url)) return;
-    if (url.includes(`:${CONFIG.PORT}`)) return;
     pendingConnections.add(url);
     try {
         const ws = new WebSocket(url);
@@ -329,30 +258,20 @@ function connectToPeer(url) {
             activePeers.set(url, ws);
             ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
         });
-        ws.on('message', (data) => {
-            try { handleRPC(JSON.parse(data.toString()), ws); } catch(e) {}
-        });
-        ws.on('close', () => {
-            activePeers.delete(url);
-            pendingConnections.delete(url);
-            setTimeout(() => connectToPeer(url), 10000);
-        });
-        ws.on('error', () => { pendingConnections.delete(url); });
+        ws.on('message', (data) => { try { handleRPC(JSON.parse(data.toString()), ws); } catch(e) {} });
+        ws.on('close', () => { activePeers.delete(url); pendingConnections.delete(url); setTimeout(() => connectToPeer(url), 10000); });
+        ws.on('error', () => { activePeers.delete(url); pendingConnections.delete(url); });
     } catch (e) { pendingConnections.delete(url); }
 }
 
 function broadcast(data, excludeWs) {
     const msg = JSON.stringify(data);
     wss.clients.forEach(c => { if (c !== excludeWs && c.readyState === WebSocket.OPEN) c.send(msg); });
-    activePeers.forEach(p => { if (p !== excludeWs && p.readyState === WebSocket.OPEN) p.send(msg); });
+    activePeers.forEach((p, url) => { if (p !== excludeWs && p.readyState === WebSocket.OPEN) p.send(msg); });
 }
 
 function checkConnections() {
-    wss.clients.forEach(ws => {
-        if (!ws.isAlive) return ws.terminate();
-        ws.isAlive = false;
-        ws.ping();
-    });
+    wss.clients.forEach(ws => { if (!ws.isAlive) return ws.terminate(); ws.isAlive = false; ws.ping(); });
 }
 
 initMongo();
