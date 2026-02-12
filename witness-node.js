@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.0
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.1
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -52,9 +52,10 @@ async function initMongo() {
         await db.collection('nfts').createIndex({ owner: 1 });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
-        // Multi-Account Genesis setup
+        // Multi-Account Genesis & Enforced Balance/Passes
         for (const nodeName of CONFIG.DEFAULT_NODES) {
             const exists = await db.collection('accounts').findOne({ username: nodeName });
+            
             if (!exists) {
                 console.log(`[INIT] Provisioning Default Account: @${nodeName} (100,000 QUEST)`);
                 await db.collection('accounts').insertOne({
@@ -65,6 +66,30 @@ async function initMongo() {
                     is_admin: nodeName === 'tekraze',
                     last_mana_sync: Date.now()
                 });
+            } else if (exists.balance === 0) {
+                console.log(`[INIT] Enforcing balance for default node: @${nodeName}`);
+                await db.collection('accounts').updateOne({ username: nodeName }, { $set: { balance: 100000, has_pass: true } });
+            }
+
+            // Ensure they have the NODE_PASS NFT so the UI unlocks
+            const hasNft = await db.collection('nfts').findOne({ owner: nodeName, subType: 'NODE_PASS' });
+            if (!hasNft) {
+                console.log(`[INIT] Injecting Witness Module for @${nodeName}`);
+                await db.collection('nfts').insertOne({ 
+                    id: `nft_genesis_${nodeName}`, 
+                    owner: nodeName, 
+                    type: 'ACCESS', 
+                    subType: 'NODE_PASS', 
+                    rarity: 'EPIC', 
+                    level: 1, 
+                    xp: 0, 
+                    value: 0 
+                });
+            }
+
+            // Ensure Witness Stats exist
+            const statsExists = await db.collection('witness_stats').findOne({ username: nodeName });
+            if (!statsExists) {
                 await db.collection('witness_stats').insertOne({
                     username: nodeName,
                     total_votes: 10000,
@@ -78,7 +103,7 @@ async function initMongo() {
         startProducerLoop();
         setInterval(checkConnections, 30000);
         
-        console.log(`[NODE] Quest Protocol v1.9.0 Online: ${CONFIG.WITNESS_NAME} (Port ${CONFIG.PORT})`);
+        console.log(`[NODE] Quest Protocol v1.9.1 Online: ${CONFIG.WITNESS_NAME} (Port ${CONFIG.PORT})`);
     } catch (e) {
         console.error(`[CRITICAL] Boot Error: ${e.message}`);
         process.exit(1);
@@ -193,13 +218,11 @@ async function executeBlockLogic(block, session) {
                 if (tx.memo) {
                     if (tx.memo === 'Game Pass') {
                         await db.collection('accounts').updateOne({ username: tx.from }, { $set: { has_pass: true } }, opts);
-                        // Also add an NFT representation for the inventory page
                         const nftId = `pass_${generateId()}`;
                         await db.collection('nfts').insertOne({ id: nftId, owner: tx.from, type: 'ACCESS', subType: 'GAME_PASS', rarity: 'RARE', level: 1, xp: 0, value: 0 }, opts);
                     } else if (tx.memo === 'Node Pass') {
-                        const nftId = `nft_${generateId()}`;
+                        const nftId = `node_${generateId()}`;
                         await db.collection('nfts').insertOne({ id: nftId, owner: tx.from, type: 'ACCESS', subType: 'NODE_PASS', rarity: 'EPIC', level: 1, xp: 0, value: 0 }, opts);
-                        // Note: Account check for node manager uses inventory, but we can set a flag too
                     } else if (tx.memo.startsWith('NFT_MINT:')) {
                         const parts = tx.memo.split(':');
                         const type = parts[1];
@@ -292,7 +315,6 @@ function connectToPeer(url) {
             try { handleRPC(JSON.parse(data.toString()), ws); } catch(e) {}
         });
         ws.on('close', () => {
-            console.log(`[P2P] Lost: ${url}`);
             activePeers.delete(url);
             pendingConnections.delete(url);
             setTimeout(() => connectToPeer(url), 10000);
