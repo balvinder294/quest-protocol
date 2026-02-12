@@ -1,6 +1,6 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.3
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.8.4
  * STAKE-BASED DPoS CONSENSUS ENGINE + AUTO-PRODUCER
  */
 
@@ -33,10 +33,15 @@ async function initMongo() {
         db = client.db(CONFIG.DB_NAME);
         
         // Check if replica set (for transactions)
-        const isMaster = await db.command({ isMaster: 1 });
-        isStandalone = !isMaster.setName;
+        try {
+            const isMaster = await db.command({ isMaster: 1 });
+            isStandalone = !isMaster.setName;
+        } catch (e) {
+            isStandalone = true;
+        }
+
         if (isStandalone) {
-            console.warn(`[DB] WARN: Standalone MongoDB detected. Transactions disabled. Use a Replica Set for production.`);
+            console.warn(`[DB] WARN: Standalone MongoDB. Using linear processing (Standard Mode).`);
         }
 
         // Core Indexes
@@ -50,6 +55,7 @@ async function initMongo() {
         // Genesis setup
         const genesisUser = await db.collection('accounts').findOne({ username: CONFIG.GENESIS_VALIDATOR });
         if (!genesisUser) {
+            console.log(`[INIT] Provisioning Genesis Validator: @${CONFIG.GENESIS_VALIDATOR}`);
             await db.collection('accounts').insertOne({
                 username: CONFIG.GENESIS_VALIDATOR,
                 balance: 1000000,
@@ -57,6 +63,11 @@ async function initMongo() {
                 has_pass: true,
                 is_admin: true,
                 last_mana_sync: Date.now()
+            });
+            await db.collection('witness_stats').insertOne({
+                username: CONFIG.GENESIS_VALIDATOR,
+                total_votes: 10000,
+                last_update: Date.now()
             });
         }
         
@@ -66,7 +77,28 @@ async function initMongo() {
         console.log(`[NODE] Quest Sidechain Engine Active: ${CONFIG.WITNESS_NAME} on Port ${CONFIG.PORT}`);
     } catch (e) {
         console.error(`[CRITICAL] DB Initialization failed: ${e.message}`);
+        console.error(e.stack);
         process.exit(1);
+    }
+}
+
+async function updateWitnessSchedule() {
+    try {
+        // Fetch top witnesses by vote weight
+        const topWitnesses = await db.collection('witness_stats')
+            .find({})
+            .sort({ total_votes: -1 })
+            .limit(CONFIG.MAX_WITNESSES)
+            .toArray();
+
+        if (topWitnesses.length > 0) {
+            currentWitnessSchedule = topWitnesses.map(w => w.username);
+        } else {
+            currentWitnessSchedule = [CONFIG.GENESIS_VALIDATOR];
+        }
+        console.log(`[CONSENSUS] Witness Schedule Updated: ${currentWitnessSchedule.join(', ')}`);
+    } catch (e) {
+        console.error(`[CONSENSUS] Failed to update schedule: ${e.message}`);
     }
 }
 
@@ -75,7 +107,10 @@ async function startProducerLoop() {
         try {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = lastBlock ? lastBlock.index + 1 : 1;
-            const currentWitness = currentWitnessSchedule[(nextIndex - 1) % currentWitnessSchedule.length];
+            
+            // DPoS Round Robin
+            const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
+            const currentWitness = currentWitnessSchedule[scheduleIndex];
 
             if (currentWitness === CONFIG.WITNESS_NAME) {
                 console.log(`[PRODUCER] My turn (${CONFIG.WITNESS_NAME}). Assembling Block #${nextIndex}...`);
@@ -105,10 +140,10 @@ async function produceBlock(index, prevHash) {
 
     const success = await processIncomingBlock(block);
     if (success) {
-        console.log(`[PRODUCER] Successfully sealed Block #${index}`);
+        console.log(`[PRODUCER] Block #${index} Sealed [${hash.substring(0,8)}...]`);
         broadcast({ type: 'NEW_BLOCK', block });
     } else {
-        console.error(`[PRODUCER] Failed to process locally produced block #${index}`);
+        console.error(`[PRODUCER] Failed to process block #${index}`);
     }
 }
 
@@ -116,13 +151,14 @@ async function processIncomingBlock(block) {
     const exists = await db.collection('blocks').findOne({ index: block.index });
     if (exists) return false;
 
-    // Use transaction if replica set, otherwise simple sequence
+    // Use transaction if replica set, otherwise simple sequence (Normal Mode)
     if (!isStandalone) {
         const session = client.startSession();
         try {
             await session.withTransaction(async () => {
                 await executeBlockLogic(block, session);
             });
+            await updateWitnessSchedule();
             return true;
         } catch (e) {
             console.error(`[BLOCK] Transaction failed: ${e.message}`);
@@ -133,9 +169,10 @@ async function processIncomingBlock(block) {
     } else {
         try {
             await executeBlockLogic(block, null);
+            await updateWitnessSchedule();
             return true;
         } catch (e) {
-            console.error(`[BLOCK] Standalone processing failed: ${e.message}`);
+            console.error(`[BLOCK] Linear processing failed: ${e.message}`);
             return false;
         }
     }
@@ -148,29 +185,37 @@ async function executeBlockLogic(block, session) {
     
     if (block.transactions) {
         for (const tx of block.transactions) {
-            if (tx.type === 'TRANSFER') {
-                await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
-                await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
-            } else if (tx.type === 'STAKE') {
-                await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount, staked: tx.amount } }, opts);
-            } else if (tx.type === 'UNSTAKE') {
-                await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: tx.amount, staked: -tx.amount } }, opts);
-            } else if (tx.type === 'VOTE') {
-                const voter = await db.collection('accounts').findOne({ username: tx.from }, opts);
-                await db.collection('votes').updateOne(
-                    { voter: tx.from }, 
-                    { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, 
-                    { ...opts, upsert: true }
-                );
-                await recalculateWitnessWeight(tx.to, session);
+            try {
+                if (tx.type === 'TRANSFER') {
+                    await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
+                    await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
+                } else if (tx.type === 'STAKE') {
+                    await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount, staked: tx.amount } }, opts);
+                } else if (tx.type === 'UNSTAKE') {
+                    await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: tx.amount, staked: -tx.amount } }, opts);
+                } else if (tx.type === 'VOTE') {
+                    const voter = await db.collection('accounts').findOne({ username: tx.from }, opts);
+                    await db.collection('votes').updateOne(
+                        { voter: tx.from }, 
+                        { $set: { witness: tx.to, weight: voter?.staked || 0, timestamp: Date.now() } }, 
+                        { ...opts, upsert: true }
+                    );
+                    await recalculateWitnessWeight(tx.to, session);
+                }
+                // Mark transaction as processed
+                await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
+            } catch (txError) {
+                console.error(`[TX] Failed to process ${tx.id}: ${txError.message}`);
             }
-            // Mark transaction as processed
-            await db.collection('transactions').updateOne({ id: tx.id }, { $set: { block_index: block.index } }, opts);
         }
     }
     
     // Reward validator
-    await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
+    await db.collection('accounts').updateOne(
+        { username: block.validator }, 
+        { $inc: { balance: 50 } }, 
+        { ...opts, upsert: true }
+    );
 }
 
 async function recalculateWitnessWeight(witnessName, session) {
@@ -204,7 +249,8 @@ async function handleRPC(rpc, ws) {
             ws.send(JSON.stringify({ 
                 type: 'BLOCK_DATA', 
                 blocks, 
-                witnesses: currentWitnessSchedule 
+                witnesses: currentWitnessSchedule,
+                currentWitness: currentWitnessSchedule[(blocks.length) % currentWitnessSchedule.length]
             }));
             break;
 
@@ -221,7 +267,6 @@ async function handleRPC(rpc, ws) {
         case 'NEW_BLOCK':
             const success = await processIncomingBlock(rpc.block);
             if (success) {
-                await updateWitnessSchedule();
                 broadcast(rpc, ws);
             }
             break;
@@ -240,6 +285,7 @@ async function handleRPC(rpc, ws) {
 
 function connectToPeers() {
     CONFIG.PEER_URLS.forEach(url => {
+        if (!url) return;
         try {
             const ws = new WebSocket(url);
             ws.on('open', () => {
