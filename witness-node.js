@@ -1,7 +1,7 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.22
- * ABSOLUTE SLOT CONSENSUS + SIMPLE HASH SIGNING
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.23
+ * ABSOLUTE SLOT CONSENSUS + SIMPLE HASH SIGNING + PASS FIX
  */
 
 import 'dotenv/config';
@@ -38,7 +38,7 @@ function canonicalBlockHash(block) {
 
 async function initMongo() {
     try {
-        console.log(`[INIT] Quest Protocol Node v1.9.22 Starting...`);
+        console.log(`[INIT] Quest Protocol Node v1.9.23 Starting...`);
         client = new MongoClient(CONFIG.MONGO_URI);
         await client.connect();
         db = client.db(CONFIG.DB_NAME);
@@ -51,9 +51,11 @@ async function initMongo() {
         await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
         await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
         await db.collection('transactions').createIndex({ id: 1 }, { unique: true });
+        await db.collection('nfts').createIndex({ id: 1 }, { unique: true });
         
         const treasury = await db.collection('accounts').findOne({ username: CONFIG.TREASURY });
         if (!treasury) {
+            console.log(`[GENESIS] Seeding Treasury with 1M QUEST...`);
             await db.collection('accounts').insertOne({ username: CONFIG.TREASURY, balance: CONFIG.GENESIS_MINT, staked: 0 });
         }
 
@@ -64,7 +66,7 @@ async function initMongo() {
         setInterval(checkConnections, 30000);
         setInterval(logHeartbeat, 10000); 
         
-        console.log(`[NODE] ONLINE. Signer: @${CONFIG.CONFIG_NAME || CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] ONLINE. Active Witness: @${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error("[INIT_FATAL]", e);
         process.exit(1);
@@ -87,7 +89,7 @@ async function logHeartbeat() {
         const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
         const { slot, leader } = getCurrentSlotInfo();
         const height = lastBlock ? lastBlock.index : 0;
-        console.log(`[HEARTBEAT] H:${height} | Slot:${slot} | Leader:@${leader} | Peers:${activePeers.size}`);
+        console.log(`[HEARTBEAT] H:${height} | Slot:${slot} | Leader:@${leader} | P2P:${activePeers.size}`);
     } catch (e) {}
 }
 
@@ -109,14 +111,13 @@ async function attemptBlockProduction() {
             const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
             const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
 
-            // Prevent double-signing same height or same slot
-            const collisionHeight = await db.collection('blocks').findOne({ index: nextIndex });
-            if (collisionHeight) return;
+            const collision = await db.collection('blocks').findOne({ index: nextIndex });
+            if (collision) return;
 
             const timeSinceLast = lastBlock ? (timestamp - lastBlock.timestamp) : Infinity;
-            if (timeSinceLast < CONFIG.BLOCK_INTERVAL) return;
+            if (timeSinceLast < (CONFIG.BLOCK_INTERVAL - 500)) return;
 
-            console.log(`[PRODUCER] My Slot (${slot})! Producing Block #${nextIndex}`);
+            console.log(`[PRODUCER] My Slot! Producing Block #${nextIndex}`);
             await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64), timestamp);
         }
     } catch (e) {
@@ -151,9 +152,8 @@ async function produceBlock(index, prevHash, timestamp) {
 async function processIncomingBlock(block) {
     if (!block || !block.hash) return false;
     
-    // Check height collision
-    const collision = await db.collection('blocks').findOne({ index: block.index });
-    if (collision) return true;
+    const existing = await db.collection('blocks').findOne({ index: block.index });
+    if (existing) return true;
 
     const latestBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
     const localHeight = latestBlock ? latestBlock.index : 0;
@@ -165,13 +165,13 @@ async function processIncomingBlock(block) {
     
     if (block.index <= localHeight) return true; 
 
-    // Slot-based Consensus Verification
+    // Verification of Slot Leader
     const blockSlot = Math.floor(block.timestamp / CONFIG.BLOCK_INTERVAL);
     const expectedLeaderIdx = blockSlot % currentWitnessSchedule.length;
     const expectedLeader = currentWitnessSchedule[expectedLeaderIdx];
 
     if (block.validator !== expectedLeader) {
-        console.warn(`[CONSENSUS] REJECT: #${block.index} from @${block.validator}. Slot ${blockSlot} belongs to @${expectedLeader}`);
+        console.warn(`[CONSENSUS] REJECT: Slot ${blockSlot} belongs to @${expectedLeader}, not @${block.validator}`);
         return false;
     }
 
@@ -180,10 +180,9 @@ async function processIncomingBlock(block) {
         if (session) await session.withTransaction(async () => { await executeBlockLogic(block, session); });
         else await executeBlockLogic(block, null);
         
-        console.log(`[LEDGER] SEALED: #${block.index} by @${block.validator}`);
+        console.log(`[LEDGER] SEALED: #${block.index} by @${block.validator} (${block.transactions.length} TXs)`);
         return true;
     } catch (e) { 
-        console.error(`[LEDGER] ERROR: ${e.message}`);
         return e.code === 11000; 
     } 
     finally { if (session) await session.endSession(); }
@@ -195,10 +194,14 @@ async function executeBlockLogic(block, session) {
     if (block.transactions) {
         for (const tx of block.transactions) {
             try {
-                // Fix: Robust Game Pass Memo Check
-                if (tx.memo && (tx.memo.includes('GAME_PASS') || tx.memo.includes('ACCESS:GAME_PASS'))) {
-                    console.log(`[LEDGER] License Granted: @${tx.from}`);
-                    await db.collection('accounts').updateOne({ username: tx.from }, { $set: { has_pass: true } }, opts);
+                // Game Pass Activation Logic
+                if (tx.memo && (tx.memo.includes('GAME_PASS') || tx.memo.includes('QUEST_PASS'))) {
+                    console.log(`[LEDGER] Granting License to @${tx.from}`);
+                    await db.collection('accounts').updateOne(
+                        { username: tx.from }, 
+                        { $set: { has_pass: true } }, 
+                        { ...opts, upsert: true }
+                    );
                 }
 
                 if (tx.type === 'TRANSFER' || tx.type === 'MINT' || tx.type === 'REWARD') {
@@ -207,8 +210,18 @@ async function executeBlockLogic(block, session) {
                 } else if (tx.type === 'UPDATE_SIGNER') {
                     await db.collection('accounts').updateOne({ username: tx.from }, { $set: { pub_key: tx.to } }, opts);
                 }
+                
+                // Track NFTs
+                if (tx.memo && tx.memo.startsWith('NFT_MINT:')) {
+                    const parts = tx.memo.split(':');
+                    const nft = { id: `nft_${generateId()}`, owner: tx.from, type: parts[1], subType: parts[2], value: Number(parts[3]), level: 1, xp: 0 };
+                    await db.collection('nfts').insertOne(nft, opts);
+                }
+
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { ...tx, block_index: block.index } }, { ...opts, upsert: true });
-            } catch (err) {}
+            } catch (err) {
+                console.error(`[TX_ERR] ${err.message}`);
+            }
         }
     }
     await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
@@ -220,16 +233,21 @@ wss.on('connection', (ws) => {
         try {
             const rpc = JSON.parse(data.toString());
             if (rpc.type === 'PING') ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
+            
             if (rpc.type === 'GET_BLOCKS') {
                 const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(100).toArray();
                 const { leader } = getCurrentSlotInfo();
                 ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: leader }));
             }
+            
             if (rpc.type === 'QUERY_STATE') {
-                let userAccount = await db.collection('accounts').findOne({ username: rpc.username });
-                ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user: userAccount }));
+                const userAccount = await db.collection('accounts').findOne({ username: rpc.username });
+                const inventory = await db.collection('nfts').find({ owner: rpc.username }).toArray();
+                ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user: userAccount, inventory }));
             }
+            
             if (rpc.type === 'NEW_BLOCK') await processIncomingBlock(rpc.block);
+            
             if (rpc.type === 'PUSH_TX') {
                 const existing = await db.collection('transactions').findOne({ id: rpc.tx.id });
                 if (!existing) {

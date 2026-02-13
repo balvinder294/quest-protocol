@@ -102,7 +102,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         ...prev,
                         balance: msg.user.balance || 0,
                         stakedBalance: msg.user.staked || 0,
-                        hasGamePass: !!msg.user.has_pass, // Map correctly to MongoDB has_pass
+                        hasGamePass: !!msg.user.has_pass, // Guaranteed boolean mapping
                         isAdmin: msg.user.is_admin || (msg.user.username === ADMIN_USER),
                         inventory: msg.inventory || [],
                         signerKey: msg.user.pub_key
@@ -196,9 +196,9 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const buyGamePass = () => {
-      // Corrected memo for node processing
+      // Direct pass purchase with explicit memo for node detection
       sendTransaction(TREASURY_ACCOUNT, GAME_PASS_COST, 'QUEST_GAME_PASS_MINT', 'TRANSFER');
-      alert("License request sent to cluster. Hub will unlock once block is sealed.");
+      alert("License request dispatched. Awaiting consensus verification (1-2 blocks).");
   };
   
   const voteForWitness = (witness: string) => sendTransaction(witness, 0, `Voted ${witness}`, 'VOTE');
