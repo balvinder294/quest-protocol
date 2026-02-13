@@ -1,7 +1,7 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.17
- * HYPER-VERBOSE CONSENSUS ENGINE
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.18
+ * TIME-SLOT CONSENSUS (ANTI-STALL)
  */
 
 import 'dotenv/config';
@@ -22,7 +22,7 @@ const CONFIG = {
     MAX_SUPPLY: 1000000000,
     TREASURY: 'PROTOCOL_TREASURY',
     CHAIN_ID: 'quest_mainnet_v1',
-    BLOCK_INTERVAL: 3000,
+    BLOCK_INTERVAL: 3000, // 3 second slots
     WELCOME_BONUS: 1000,
     EPOCH_LENGTH: 50
 };
@@ -51,9 +51,8 @@ function canonicalBlockHash(block) {
 
 async function initMongo() {
     try {
-        console.log(`[INIT] Starting Quest Protocol Node v1.9.17...`);
+        console.log(`[INIT] Starting Quest Protocol Node v1.9.18...`);
         console.log(`[INIT] Witness Name: @${CONFIG.WITNESS_NAME}`);
-        console.log(`[INIT] Connecting to MongoDB: ${CONFIG.MONGO_URI}`);
         
         client = new MongoClient(CONFIG.MONGO_URI);
         await client.connect();
@@ -62,39 +61,29 @@ async function initMongo() {
         try {
             const isMaster = await db.command({ isMaster: 1 });
             isStandalone = !isMaster.setName;
-            console.log(`[INIT] MongoDB Mode: ${isStandalone ? 'Standalone' : 'ReplicaSet'}`);
         } catch (e) { isStandalone = true; }
 
         await db.collection('blocks').createIndex({ index: 1 }, { unique: true });
         await db.collection('accounts').createIndex({ username: 1 }, { unique: true });
         
-        const treasury = await db.collection('accounts').findOne({ username: CONFIG.TREASURY });
-        if (!treasury) {
-            console.log(`[INIT] Creating Genesis Treasury...`);
-            await db.collection('accounts').insertOne({ username: CONFIG.TREASURY, balance: 500000000, staked: 0 });
-        }
-
         if (CONFIG.PRIVATE_KEY) {
             await db.collection('accounts').updateOne(
                 { username: CONFIG.WITNESS_NAME },
                 { $set: { signer_key: CONFIG.PRIVATE_KEY } },
                 { upsert: true }
             );
-            console.log(`[AUTH] Local signer registered successfully.`);
-        } else {
-            console.error(`[AUTH] CRITICAL: No PRIVATE_KEY provided. This node will NOT be able to produce blocks.`);
+            console.log(`[AUTH] Local signer registered.`);
         }
 
         await updateWitnessSchedule();
-        
-        console.log(`[P2P] Bootstrapping peers: ${CONFIG.PEER_URLS.length} targets found.`);
         CONFIG.PEER_URLS.forEach(url => connectToPeer(url.trim()));
         
-        setInterval(attemptBlockProduction, CONFIG.BLOCK_INTERVAL);
+        // Block Production Heartbeat
+        setInterval(attemptBlockProduction, 1000); // Check every second for slot alignment
         setInterval(checkConnections, 30000);
-        setInterval(logHeartbeat, 10000); // Progress log every 10s
+        setInterval(logHeartbeat, 10000); 
         
-        console.log(`[NODE] ONLINE. Listening on port ${CONFIG.PORT}.`);
+        console.log(`[NODE] ONLINE. Slot Interval: ${CONFIG.BLOCK_INTERVAL}ms`);
     } catch (e) {
         console.error("[INIT_FATAL]", e);
         process.exit(1);
@@ -105,10 +94,13 @@ async function logHeartbeat() {
     try {
         const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
         const height = lastBlock ? lastBlock.index : 0;
-        const scheduleIndex = (height + 1) % currentWitnessSchedule.length;
-        const leader = currentWitnessSchedule[scheduleIndex];
         
-        console.log(`[HEARTBEAT] Height: ${height} | Mempool: ${SEEN_TX_IDS.size} | Peers: ${activePeers.size} | Next: @${leader} ${leader === CONFIG.WITNESS_NAME ? '(ME!)' : ''}`);
+        // Slot Math
+        const currentSlot = Math.floor(Date.now() / CONFIG.BLOCK_INTERVAL);
+        const leaderIdx = currentSlot % currentWitnessSchedule.length;
+        const leader = currentWitnessSchedule[leaderIdx];
+        
+        console.log(`[HEARTBEAT] H:${height} | Slot:${currentSlot} | Leader:@${leader} ${leader === CONFIG.WITNESS_NAME ? '(YOU)' : ''} | Peers:${activePeers.size}`);
     } catch (e) {}
 }
 
@@ -118,44 +110,42 @@ async function updateWitnessSchedule() {
         const names = topWitnesses.map(w => w.username);
         const combined = Array.from(new Set([...names, 'tekraze', 'kamranrkploy', 'node_gamma']));
         currentWitnessSchedule = combined.slice(0, CONFIG.MAX_WITNESSES);
-        console.log(`[CONSENSUS] Schedule Refreshed: [${currentWitnessSchedule.join(', ')}]`);
-    } catch (e) { 
-        console.error(`[CONSENSUS] Schedule Update Fail: ${e.message}`);
-    }
+        console.log(`[CONSENSUS] Schedule: [${currentWitnessSchedule.join(', ')}]`);
+    } catch (e) {}
 }
 
 async function attemptBlockProduction() {
     try {
         if (!CONFIG.PRIVATE_KEY) return;
 
-        const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
-        const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
-        const scheduleIndex = nextIndex % currentWitnessSchedule.length;
+        const now = Date.now();
+        const currentSlot = Math.floor(now / CONFIG.BLOCK_INTERVAL);
+        const scheduleIndex = currentSlot % currentWitnessSchedule.length;
         const expectedLeader = currentWitnessSchedule[scheduleIndex];
 
         if (expectedLeader === CONFIG.WITNESS_NAME) {
-            console.log(`[PRODUCER] turn_match: My turn for block #${nextIndex}. Checking for collisions...`);
-            const collision = await db.collection('blocks').findOne({ index: nextIndex });
-            if (collision) {
-                console.log(`[PRODUCER] collision: Block #${nextIndex} already exists. Skipping.`);
-                return;
-            }
-            await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
+            const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+            const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
+
+            // Don't produce if we already saw a block for this slot or height
+            const timeSinceLast = lastBlock ? (now - lastBlock.timestamp) : Infinity;
+            if (timeSinceLast < CONFIG.BLOCK_INTERVAL) return;
+
+            console.log(`[PRODUCER] My Slot! Producing Block #${nextIndex} (Slot ${currentSlot})`);
+            await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64), now);
         }
     } catch (e) {
         console.error("[PRODUCER_ERR]", e);
     }
 }
 
-async function produceBlock(index, prevHash) {
+async function produceBlock(index, prevHash, timestamp) {
     try {
         const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
-        console.log(`[PRODUCER] Packaging #${index} with ${pendingTxs.length} TXs.`);
-        
         const block = { 
             index, 
             previousHash: prevHash, 
-            timestamp: Date.now(), 
+            timestamp, 
             validator: CONFIG.WITNESS_NAME, 
             chainId: CONFIG.CHAIN_ID, 
             transactions: pendingTxs 
@@ -164,15 +154,9 @@ async function produceBlock(index, prevHash) {
         block.hash = canonicalBlockHash(block);
         block.witnessSignature = simpleHash(block.hash + CONFIG.PRIVATE_KEY);
         
-        console.log(`[PRODUCER] Block Hash: ${block.hash}`);
-        console.log(`[PRODUCER] Local Signature: ${block.witnessSignature}`);
-
         const success = await processIncomingBlock(block);
         if (success) {
-            console.log(`[P2P] BROADCASTING Block #${index}`);
             broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
-        } else {
-            console.error(`[PRODUCER] Local verification failed for block #${index}. Block discarded.`);
         }
     } catch (e) {
         console.error(`[PRODUCER_FATAL] ${e.message}`);
@@ -186,24 +170,20 @@ async function processIncomingBlock(block) {
     const latestBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
     const localHeight = latestBlock ? latestBlock.index : 0;
     
-    console.log(`[SYNC] Block Received: #${block.index} from @${block.validator} (Local: ${localHeight})`);
-
     if (block.index > localHeight + 1) {
-        console.log(`[SYNC] Detected gap! We are at ${localHeight}, received ${block.index}. Requesting full chain.`);
         broadcast({ type: 'GET_BLOCKS' });
         return false;
     }
     
-    if (block.index <= localHeight) {
-        console.log(`[SYNC] Received old block #${block.index}. Ignoring.`);
-        return true; 
-    }
+    if (block.index <= localHeight) return true; 
 
-    // Consensus Check
-    const scheduleIndex = block.index % currentWitnessSchedule.length;
-    const expectedLeader = currentWitnessSchedule[scheduleIndex];
+    // Time-Slot Validation
+    const blockSlot = Math.floor(block.timestamp / CONFIG.BLOCK_INTERVAL);
+    const leaderIdx = blockSlot % currentWitnessSchedule.length;
+    const expectedLeader = currentWitnessSchedule[leaderIdx];
+    
     if (block.validator !== expectedLeader) {
-        console.error(`[CONSENSUS] REJECTED: Block #${block.index} validator mismatch. Expected @${expectedLeader}, Got @${block.validator}`);
+        console.error(`[CONSENSUS] REJECTED: #${block.index} from @${block.validator}. Slot ${blockSlot} belongs to @${expectedLeader}`);
         return false;
     }
 
@@ -213,12 +193,8 @@ async function processIncomingBlock(block) {
         const expectedSig = simpleHash(block.hash + validatorAccount.signer_key);
         if (block.witnessSignature !== expectedSig) {
             console.error(`[CONSENSUS] REJECTED: Invalid signature from @${block.validator}.`);
-            console.debug(`[DEBUG] Received: ${block.witnessSignature}`);
-            console.debug(`[DEBUG] Expected: ${expectedSig}`);
             return false;
         }
-    } else {
-        console.warn(`[CONSENSUS] Identity unknown: No key for @${block.validator}. Allowing block for genesis bootstrap.`);
     }
 
     const session = !isStandalone ? client.startSession() : null;
@@ -227,10 +203,10 @@ async function processIncomingBlock(block) {
         else await executeBlockLogic(block, null);
         
         SEEN_BLOCK_HASHES.add(block.hash);
-        console.log(`[LEDGER] SUCCESS: Block #${block.index} sealed by @${block.validator}.`);
+        console.log(`[LEDGER] SEALED: #${block.index} by @${block.validator} (Slot: ${blockSlot})`);
         return true;
     } catch (e) { 
-        console.error(`[LEDGER] FAILED: Could not commit #${block.index}: ${e.message}`);
+        console.error(`[LEDGER] FAILED #${block.index}: ${e.message}`);
         return e.code === 11000; 
     } 
     finally { 
@@ -245,49 +221,39 @@ async function executeBlockLogic(block, session) {
     if (block.transactions) {
         for (const tx of block.transactions) {
             try {
-                // Simplified Logic: Just move balance
                 if (tx.type === 'TRANSFER' || tx.type === 'MINT' || tx.type === 'REWARD') {
                     await db.collection('accounts').updateOne({ username: tx.from }, { $inc: { balance: -tx.amount } }, opts);
                     await db.collection('accounts').updateOne({ username: tx.to }, { $inc: { balance: tx.amount } }, { ...opts, upsert: true });
                 } else if (tx.type === 'UPDATE_SIGNER') {
                     await db.collection('accounts').updateOne({ username: tx.from }, { $set: { signer_key: tx.to } }, opts);
                 }
-                
                 await db.collection('transactions').updateOne({ id: tx.id }, { $set: { ...tx, block_index: block.index } }, { ...opts, upsert: true });
                 SEEN_TX_IDS.add(tx.id);
             } catch (err) {}
         }
     }
     
-    // Witness Reward
     await db.collection('accounts').updateOne({ username: CONFIG.TREASURY }, { $inc: { balance: -50 } }, opts);
     await db.collection('accounts').updateOne({ username: block.validator }, { $inc: { balance: 50 } }, { ...opts, upsert: true });
 }
 
 const wss = new WebSocketServer({ port: CONFIG.PORT });
 wss.on('connection', (ws) => {
-    console.log(`[P2P] New incoming peer connection.`);
     ws.on('message', async (data) => {
         try {
             const rpc = JSON.parse(data.toString());
-            // console.debug(`[P2P_RX] Type: ${rpc.type}`);
-            
             if (rpc.type === 'PING') ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
-            
             if (rpc.type === 'GET_BLOCKS') {
                 const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(100).toArray();
                 ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: currentWitnessSchedule[0] }));
             }
-            
             if (rpc.type === 'QUERY_STATE') {
                 let user = await db.collection('accounts').findOne({ username: rpc.username });
                 ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user }));
             }
-            
             if (rpc.type === 'NEW_BLOCK') {
                 await processIncomingBlock(rpc.block);
             }
-            
             if (rpc.type === 'PUSH_TX') {
                 if (!SEEN_TX_IDS.has(rpc.tx.id)) {
                     await db.collection('transactions').updateOne({ id: rpc.tx.id }, { $setOnInsert: { ...rpc.tx, block_index: null } }, { upsert: true });
@@ -306,13 +272,10 @@ function connectToPeer(url) {
         ws.on('open', () => {
             activePeers.set(url, ws);
             pendingConnections.delete(url);
-            console.log(`[P2P] Outbound link established: ${url}`);
+            console.log(`[P2P] Linked: ${url}`);
             ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
         });
-        ws.on('close', () => { 
-            activePeers.delete(url); 
-            setTimeout(() => connectToPeer(url), 10000); 
-        });
+        ws.on('close', () => { activePeers.delete(url); setTimeout(() => connectToPeer(url), 10000); });
         ws.on('error', () => { pendingConnections.delete(url); });
     } catch (e) { pendingConnections.delete(url); }
 }
