@@ -102,10 +102,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         ...prev,
                         balance: msg.user.balance || 0,
                         stakedBalance: msg.user.staked || 0,
-                        hasGamePass: msg.user.has_pass === true, // Fixed: ensure boolean check
+                        hasGamePass: !!msg.user.has_pass, // Map MongoDB 'has_pass' to UI state
                         isAdmin: msg.user.is_admin || (msg.user.username === ADMIN_USER),
                         inventory: msg.inventory || [],
-                        signerKey: msg.user.pub_key // Fixed: mapped to pub_key
+                        signerKey: msg.user.pub_key
                     }));
                 }
                 break;
@@ -132,7 +132,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       currentWitness: msg.currentWitness || prev.currentWitness 
                     };
                 });
-                if (userRef.current.username) wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username: userRef.current.username }));
+                // Refresh local user state if we are logged in
+                if (userRef.current.username) {
+                   wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username: userRef.current.username }));
+                }
                 break;
             case 'PUSH_TX':
                 if (msg.tx) setChain(prev => ({ ...prev, pendingTransactions: [...prev.pendingTransactions, msg.tx] }));
@@ -196,9 +199,9 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const buyGamePass = () => {
-      // Direct pass purchase burns 500 QUEST
+      // Direct pass purchase burns QUEST
       sendTransaction(TREASURY_ACCOUNT, GAME_PASS_COST, 'NFT_MINT:ACCESS:GAME_PASS:0', 'MINT');
-      alert("Purchase signal broadcast. It may take 1-2 blocks to verify.");
+      alert("License request dispatched. Awaiting consensus confirmation (1-2 blocks).");
   };
   
   const voteForWitness = (witness: string) => sendTransaction(witness, 0, `Voted ${witness}`, 'VOTE');
