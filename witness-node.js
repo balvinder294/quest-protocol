@@ -8,7 +8,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { MongoClient } from 'mongodb';
 import minimist from 'minimist';
 import nacl from 'tweetnacl';
-import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
+import pkg from 'tweetnacl-util';
+const { decodeBase64, encodeBase64 } = pkg;
+// import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
 import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
