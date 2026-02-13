@@ -10,7 +10,6 @@ import minimist from 'minimist';
 import nacl from 'tweetnacl';
 import pkg from 'tweetnacl-util';
 const {decodeBase64, encodeBase64} = pkg;
-// import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
 import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
@@ -79,12 +78,10 @@ async function initMongo() {
         if (CONFIG.PRIVATE_KEY) {
             try {
                 let privBytes = decodeBase64(CONFIG.PRIVATE_KEY);
-                // Gracefully handle encoding artifacts by slicing to exactly 64 bytes
+                // Handle 66-byte or longer inputs by slicing to exactly 64 bytes (Ed25519 standard)
                 if (privBytes.length >= 64) {
-                    if (privBytes.length > 64) {
-                        console.warn(`[WARN] Private key was ${privBytes.length} bytes. Slicing to 64.`);
-                        privBytes = privBytes.slice(0, 64);
-                    }
+                    privBytes = privBytes.slice(0, 64);
+                    // Public key is the last 32 bytes of the 64-byte secret key
                     const pubKeyBase64 = encodeBase64(privBytes.slice(32));
                     await db.collection('accounts').updateOne(
                         { username: CONFIG.WITNESS_NAME },
@@ -93,7 +90,7 @@ async function initMongo() {
                     );
                     console.log(`[AUTH] Public key registered for @${CONFIG.WITNESS_NAME}: ${pubKeyBase64}`);
                 } else {
-                    console.error(`❌ FATAL: Private key too short. Expected 64 bytes, got ${privBytes.length}.`);
+                    console.error(`❌ FATAL: Private key too short (${privBytes.length} bytes). Need 64.`);
                 }
             } catch (e) {
                 console.error("❌ FATAL: Invalid Base64 in --key argument.");
@@ -173,6 +170,7 @@ async function produceBlock(index, prevHash) {
     // ED25519 SIGNING
     try {
         let privateKeyBytes = decodeBase64(CONFIG.PRIVATE_KEY);
+        // Strict 64-byte enforcement for tweetnacl
         if (privateKeyBytes.length > 64) privateKeyBytes = privateKeyBytes.slice(0, 64);
         if (privateKeyBytes.length !== 64) throw new Error(`Invalid key length: ${privateKeyBytes.length}`);
         
