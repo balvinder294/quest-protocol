@@ -9,7 +9,7 @@ import { MongoClient } from 'mongodb';
 import minimist from 'minimist';
 import nacl from 'tweetnacl';
 import pkg from 'tweetnacl-util';
-const {decodeBase64, encodeBase64} = pkg;
+const { decodeBase64, encodeBase64 } = pkg;
 import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
@@ -18,7 +18,7 @@ const CONFIG = {
     MONGO_URI: argv.mongo || 'mongodb://localhost:27017',
     DB_NAME: `quest_protocol_${argv.db || 'node'}`,
     WITNESS_NAME: argv.name || 'tekraze',
-    PRIVATE_KEY: argv.key || null, 
+    PRIVATE_KEY: (argv.key || '').trim(), 
     PEER_URLS: argv.peers ? argv.peers.toString().split(',') : [],
     MAX_WITNESSES: 21,
     MAX_SUPPLY: 1000000000,
@@ -78,22 +78,27 @@ async function initMongo() {
         if (CONFIG.PRIVATE_KEY) {
             try {
                 let privBytes = decodeBase64(CONFIG.PRIVATE_KEY);
-                // Handle 66-byte or longer inputs by slicing to exactly 64 bytes (Ed25519 standard)
+                console.log(`[BOOT] Decoded Private Key length: ${privBytes.length} bytes`);
+                
+                // Force slice to 64 bytes to fix encoding/artifact issues
                 if (privBytes.length >= 64) {
                     privBytes = privBytes.slice(0, 64);
-                    // Public key is the last 32 bytes of the 64-byte secret key
+                    // Public key is always the last 32 bytes of the 64-byte Ed25519 secret key
                     const pubKeyBase64 = encodeBase64(privBytes.slice(32));
                     await db.collection('accounts').updateOne(
                         { username: CONFIG.WITNESS_NAME },
                         { $set: { signer_key: pubKeyBase64 } },
                         { upsert: true }
                     );
-                    console.log(`[AUTH] Public key registered for @${CONFIG.WITNESS_NAME}: ${pubKeyBase64}`);
+                    console.log(`[AUTH] Protocol Identity established for @${CONFIG.WITNESS_NAME}`);
+                    console.log(`[AUTH] Public Key: ${pubKeyBase64}`);
                 } else {
                     console.error(`❌ FATAL: Private key too short (${privBytes.length} bytes). Need 64.`);
+                    process.exit(1);
                 }
             } catch (e) {
                 console.error("❌ FATAL: Invalid Base64 in --key argument.");
+                process.exit(1);
             }
         }
 
@@ -103,8 +108,7 @@ async function initMongo() {
         setInterval(attemptBlockProduction, CONFIG.BLOCK_INTERVAL);
         setInterval(checkConnections, 30000);
         setInterval(cleanupCaches, 60000); 
-        console.log(`[NODE] Quest Protocol v1.9.12 [ED25519_ENABLED]: @${CONFIG.WITNESS_NAME}`);
-        if (!CONFIG.PRIVATE_KEY) console.warn("⚠️ NO PRIVATE KEY LOADED. BLOCK PRODUCTION WILL FAIL.");
+        console.log(`[NODE] Quest Protocol v1.9.12 [STRICT_CRYPTO]: @${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         process.exit(1);
     }
@@ -170,11 +174,16 @@ async function produceBlock(index, prevHash) {
     // ED25519 SIGNING
     try {
         let privateKeyBytes = decodeBase64(CONFIG.PRIVATE_KEY);
-        // Strict 64-byte enforcement for tweetnacl
+        // Force exactly 64 bytes for tweetnacl
         if (privateKeyBytes.length > 64) privateKeyBytes = privateKeyBytes.slice(0, 64);
-        if (privateKeyBytes.length !== 64) throw new Error(`Invalid key length: ${privateKeyBytes.length}`);
         
-        const signature = nacl.sign.detached(Buffer.from(block.hash), privateKeyBytes);
+        if (privateKeyBytes.length !== 64) {
+            throw new Error(`Invalid key length after processing: ${privateKeyBytes.length}`);
+        }
+        
+        // Ensure inputs are Uint8Array
+        const hashBytes = Buffer.from(block.hash);
+        const signature = nacl.sign.detached(new Uint8Array(hashBytes), new Uint8Array(privateKeyBytes));
         block.witnessSignature = encodeBase64(signature);
     } catch (e) {
         console.error(`❌ SIGNING_FAILED for Block #${index}: ${e.message}`);
@@ -193,7 +202,6 @@ async function processIncomingBlock(block) {
     const latestBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
     const localHeight = latestBlock ? latestBlock.index : 0;
     
-    // MISSING BLOCK AUTO-SYNC
     if (block.index > localHeight + 1) {
         console.log(`⚠️ Height Gap Detected: Local=${localHeight}, Incoming=${block.index}. Triggering Sync.`);
         broadcast({ type: 'GET_BLOCKS' });
@@ -216,7 +224,13 @@ async function processIncomingBlock(block) {
         try {
             const publicKeyBytes = decodeBase64(validatorAccount.signer_key);
             const signatureBytes = decodeBase64(block.witnessSignature);
-            const isValid = nacl.sign.detached.verify(Buffer.from(block.hash), signatureBytes, publicKeyBytes);
+            const hashBytes = Buffer.from(block.hash);
+            
+            const isValid = nacl.sign.detached.verify(
+                new Uint8Array(hashBytes), 
+                new Uint8Array(signatureBytes), 
+                new Uint8Array(publicKeyBytes)
+            );
             
             if (!isValid) {
                 console.log(`❌ BLOCK_REJECTED: Invalid Ed25519 Signature`);
@@ -234,7 +248,6 @@ async function processIncomingBlock(block) {
         else await executeBlockLogic(block, null);
         SEEN_BLOCK_HASHES.add(block.hash);
         
-        // Epoch Schedule Management
         await maybeUpdateSchedule(block.index);
         return true;
     } catch (e) { return e.code === 11000; } 
