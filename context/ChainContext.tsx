@@ -102,7 +102,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         ...prev,
                         balance: msg.user.balance || 0,
                         stakedBalance: msg.user.staked || 0,
-                        hasGamePass: !!msg.user.has_pass, // Map MongoDB 'has_pass' to UI state
+                        hasGamePass: !!msg.user.has_pass, // Map correctly to MongoDB has_pass
                         isAdmin: msg.user.is_admin || (msg.user.username === ADMIN_USER),
                         inventory: msg.inventory || [],
                         signerKey: msg.user.pub_key
@@ -132,10 +132,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       currentWitness: msg.currentWitness || prev.currentWitness 
                     };
                 });
-                // Refresh local user state if we are logged in
-                if (userRef.current.username) {
-                   wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username: userRef.current.username }));
-                }
+                if (userRef.current.username) wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username: userRef.current.username }));
                 break;
             case 'PUSH_TX':
                 if (msg.tx) setChain(prev => ({ ...prev, pendingTransactions: [...prev.pendingTransactions, msg.tx] }));
@@ -199,9 +196,9 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
   };
 
   const buyGamePass = () => {
-      // Direct pass purchase burns QUEST
-      sendTransaction(TREASURY_ACCOUNT, GAME_PASS_COST, 'NFT_MINT:ACCESS:GAME_PASS:0', 'MINT');
-      alert("License request dispatched. Awaiting consensus confirmation (1-2 blocks).");
+      // Corrected memo for node processing
+      sendTransaction(TREASURY_ACCOUNT, GAME_PASS_COST, 'QUEST_GAME_PASS_MINT', 'TRANSFER');
+      alert("License request sent to cluster. Hub will unlock once block is sealed.");
   };
   
   const voteForWitness = (witness: string) => sendTransaction(witness, 0, `Voted ${witness}`, 'VOTE');

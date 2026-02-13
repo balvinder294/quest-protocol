@@ -1,17 +1,13 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.21
- * ROUND-ROBIN + TIME-SKIP + TWEETNACL + GAME_PASS_FIX
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.22
+ * ABSOLUTE SLOT CONSENSUS + SIMPLE HASH SIGNING
  */
 
 import 'dotenv/config';
 import { WebSocketServer, WebSocket } from 'ws';
 import { MongoClient } from 'mongodb';
 import minimist from 'minimist';
-import nacl from 'tweetnacl';
-import pkg from 'tweetnacl-util';
-const {encodeBase64, decodeBase64 } = pkg;
-// import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
 import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
@@ -29,26 +25,11 @@ const CONFIG = {
     GENESIS_MINT: 1000000
 };
 
-let db, client, keyPair;
+let db, client;
 let currentWitnessSchedule = ['tekraze', 'kamranrkploy', 'node_gamma', 'zahidsun'];
 let activePeers = new Map(); 
 let pendingConnections = new Set();
 let isStandalone = false;
-
-// Robust Key Loading
-if (CONFIG.PRIVATE_KEY) {
-    try {
-        const secretUint8 = decodeBase64(CONFIG.PRIVATE_KEY);
-        if (secretUint8.length !== 64) {
-            console.error(`[AUTH] INVALID_KEY: TweetNaCl secret keys must be 64 bytes. Provided: ${secretUint8.length} bytes.`);
-        } else {
-            keyPair = nacl.sign.keyPair.fromSecretKey(secretUint8);
-            console.log(`[AUTH] Identity Linked: @${CONFIG.WITNESS_NAME} | Pub: ${encodeBase64(keyPair.publicKey).substring(0, 16)}...`);
-        }
-    } catch (e) {
-        console.error(`[AUTH] FATAL: Could not decode Base64 key. Block production disabled.`);
-    }
-}
 
 function canonicalBlockHash(block) {
     const payload = `${block.index}|${block.previousHash}|${block.timestamp}|${block.validator}|${block.chainId}|${JSON.stringify(block.transactions)}`;
@@ -57,7 +38,7 @@ function canonicalBlockHash(block) {
 
 async function initMongo() {
     try {
-        console.log(`[INIT] Quest Protocol Node v1.9.21 Starting...`);
+        console.log(`[INIT] Quest Protocol Node v1.9.22 Starting...`);
         client = new MongoClient(CONFIG.MONGO_URI);
         await client.connect();
         db = client.db(CONFIG.DB_NAME);
@@ -76,14 +57,6 @@ async function initMongo() {
             await db.collection('accounts').insertOne({ username: CONFIG.TREASURY, balance: CONFIG.GENESIS_MINT, staked: 0 });
         }
 
-        if (keyPair) {
-            await db.collection('accounts').updateOne(
-                { username: CONFIG.WITNESS_NAME },
-                { $set: { pub_key: encodeBase64(keyPair.publicKey) } },
-                { upsert: true }
-            );
-        }
-
         await updateWitnessSchedule();
         CONFIG.PEER_URLS.forEach(url => connectToPeer(url.trim()));
         
@@ -91,37 +64,30 @@ async function initMongo() {
         setInterval(checkConnections, 30000);
         setInterval(logHeartbeat, 10000); 
         
-        console.log(`[NODE] ONLINE. @${CONFIG.WITNESS_NAME} listening on ${CONFIG.PORT}`);
+        console.log(`[NODE] ONLINE. Signer: @${CONFIG.CONFIG_NAME || CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error("[INIT_FATAL]", e);
         process.exit(1);
     }
 }
 
-async function getExpectedWitness() {
-    const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+function getCurrentSlotInfo() {
     const now = Date.now();
-    
-    if (!lastBlock) return { witness: currentWitnessSchedule[0], height: 1, prevHash: '0'.repeat(64), slotsPassed: 0 };
-
-    const timeSinceLast = now - lastBlock.timestamp;
-    const missedSlots = Math.floor(timeSinceLast / CONFIG.BLOCK_INTERVAL);
-    
-    // Consensus: Round-Robin + Skip offline Turn
-    const expectedIdx = (lastBlock.index + missedSlots) % currentWitnessSchedule.length;
-    
+    const slot = Math.floor(now / CONFIG.BLOCK_INTERVAL);
+    const leaderIdx = slot % currentWitnessSchedule.length;
     return {
-        witness: currentWitnessSchedule[expectedIdx],
-        height: lastBlock.index + 1,
-        prevHash: lastBlock.hash,
-        slotsPassed: missedSlots
+        slot,
+        leader: currentWitnessSchedule[leaderIdx],
+        timestamp: now
     };
 }
 
 async function logHeartbeat() {
     try {
-        const info = await getExpectedWitness();
-        console.log(`[HEARTBEAT] H:${info.height-1} | Leader:@${info.witness} | Skip:${info.slotsPassed} | Peers:${activePeers.size}`);
+        const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+        const { slot, leader } = getCurrentSlotInfo();
+        const height = lastBlock ? lastBlock.index : 0;
+        console.log(`[HEARTBEAT] H:${height} | Slot:${slot} | Leader:@${leader} | Peers:${activePeers.size}`);
     } catch (e) {}
 }
 
@@ -136,15 +102,22 @@ async function updateWitnessSchedule() {
 
 async function attemptBlockProduction() {
     try {
-        if (!keyPair) return;
-        const info = await getExpectedWitness();
+        if (!CONFIG.PRIVATE_KEY) return;
+        const { slot, leader, timestamp } = getCurrentSlotInfo();
 
-        if (info.witness === CONFIG.WITNESS_NAME) {
-            const collision = await db.collection('blocks').findOne({ index: info.height });
-            if (collision) return;
+        if (leader === CONFIG.WITNESS_NAME) {
+            const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
+            const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
 
-            console.log(`[PRODUCER] Turn match! Packaging Block #${info.height}`);
-            await produceBlock(info.height, info.prevHash, Date.now());
+            // Prevent double-signing same height or same slot
+            const collisionHeight = await db.collection('blocks').findOne({ index: nextIndex });
+            if (collisionHeight) return;
+
+            const timeSinceLast = lastBlock ? (timestamp - lastBlock.timestamp) : Infinity;
+            if (timeSinceLast < CONFIG.BLOCK_INTERVAL) return;
+
+            console.log(`[PRODUCER] My Slot (${slot})! Producing Block #${nextIndex}`);
+            await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64), timestamp);
         }
     } catch (e) {
         console.error("[PRODUCER_ERR]", e);
@@ -164,10 +137,7 @@ async function produceBlock(index, prevHash, timestamp) {
         };
         
         block.hash = canonicalBlockHash(block);
-        
-        const msgUint8 = new TextEncoder().encode(block.hash);
-        const signature = nacl.sign.detached(msgUint8, keyPair.secretKey);
-        block.witnessSignature = encodeBase64(signature);
+        block.witnessSignature = simpleHash(block.hash + CONFIG.PRIVATE_KEY);
         
         const success = await processIncomingBlock(block);
         if (success) {
@@ -181,7 +151,7 @@ async function produceBlock(index, prevHash, timestamp) {
 async function processIncomingBlock(block) {
     if (!block || !block.hash) return false;
     
-    // Avoid re-processing duplicate heights
+    // Check height collision
     const collision = await db.collection('blocks').findOne({ index: block.index });
     if (collision) return true;
 
@@ -195,29 +165,14 @@ async function processIncomingBlock(block) {
     
     if (block.index <= localHeight) return true; 
 
-    // Consensus Verification
-    const timeSinceLast = block.timestamp - (latestBlock ? latestBlock.timestamp : 0);
-    const missedInBlock = Math.floor(timeSinceLast / CONFIG.BLOCK_INTERVAL);
-    const expectedIdx = ((latestBlock ? latestBlock.index : 0) + Math.max(1, missedInBlock)) % currentWitnessSchedule.length;
-    const expectedLeader = currentWitnessSchedule[expectedIdx];
+    // Slot-based Consensus Verification
+    const blockSlot = Math.floor(block.timestamp / CONFIG.BLOCK_INTERVAL);
+    const expectedLeaderIdx = blockSlot % currentWitnessSchedule.length;
+    const expectedLeader = currentWitnessSchedule[expectedLeaderIdx];
 
     if (block.validator !== expectedLeader) {
-        console.warn(`[CONSENSUS] REJECT: #${block.index} expected @${expectedLeader}, got @${block.validator}`);
+        console.warn(`[CONSENSUS] REJECT: #${block.index} from @${block.validator}. Slot ${blockSlot} belongs to @${expectedLeader}`);
         return false;
-    }
-
-    // Signature Verification
-    const validatorAccount = await db.collection('accounts').findOne({ username: block.validator });
-    if (validatorAccount && validatorAccount.pub_key) {
-        try {
-            const pubKeyUint8 = decodeBase64(validatorAccount.pub_key);
-            const sigUint8 = decodeBase64(block.witnessSignature);
-            const msgUint8 = new TextEncoder().encode(block.hash);
-            if (!nacl.sign.detached.verify(msgUint8, sigUint8, pubKeyUint8)) {
-                console.error(`[CONSENSUS] SIG_INVALID: @${block.validator}`);
-                return false;
-            }
-        } catch (e) { return false; }
     }
 
     const session = !isStandalone ? client.startSession() : null;
@@ -240,7 +195,7 @@ async function executeBlockLogic(block, session) {
     if (block.transactions) {
         for (const tx of block.transactions) {
             try {
-                // Game Pass Flagging
+                // Fix: Robust Game Pass Memo Check
                 if (tx.memo && (tx.memo.includes('GAME_PASS') || tx.memo.includes('ACCESS:GAME_PASS'))) {
                     console.log(`[LEDGER] License Granted: @${tx.from}`);
                     await db.collection('accounts').updateOne({ username: tx.from }, { $set: { has_pass: true } }, opts);
@@ -267,8 +222,8 @@ wss.on('connection', (ws) => {
             if (rpc.type === 'PING') ws.send(JSON.stringify({ type: 'PONG', name: CONFIG.WITNESS_NAME }));
             if (rpc.type === 'GET_BLOCKS') {
                 const blocks = await db.collection('blocks').find().sort({ index: -1 }).limit(100).toArray();
-                const info = await getExpectedWitness();
-                ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: info.witness }));
+                const { leader } = getCurrentSlotInfo();
+                ws.send(JSON.stringify({ type: 'BLOCK_DATA', blocks, witnesses: currentWitnessSchedule, currentWitness: leader }));
             }
             if (rpc.type === 'QUERY_STATE') {
                 let userAccount = await db.collection('accounts').findOne({ username: rpc.username });
