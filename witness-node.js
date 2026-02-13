@@ -9,8 +9,8 @@ import { MongoClient } from 'mongodb';
 import minimist from 'minimist';
 import nacl from 'tweetnacl';
 import pkg from 'tweetnacl-util';
-const { decodeBase64, encodeBase64 } = pkg;
-// import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
+const {decodeBase64, encodeBase64} = pkg;
+//import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
 import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
@@ -73,6 +73,26 @@ async function initMongo() {
         const treasury = await db.collection('accounts').findOne({ username: CONFIG.TREASURY });
         if (!treasury) {
             await db.collection('accounts').insertOne({ username: CONFIG.TREASURY, balance: 500000000, staked: 0 });
+        }
+
+        // AUTO-REGISTER SIGNER KEY
+        if (CONFIG.PRIVATE_KEY) {
+            try {
+                const privBytes = decodeBase64(CONFIG.PRIVATE_KEY);
+                if (privBytes.length === 64) {
+                    const pubKeyBase64 = encodeBase64(privBytes.slice(32));
+                    await db.collection('accounts').updateOne(
+                        { username: CONFIG.WITNESS_NAME },
+                        { $set: { signer_key: pubKeyBase64 } },
+                        { upsert: true }
+                    );
+                    console.log(`[AUTH] Public key registered for @${CONFIG.WITNESS_NAME}: ${pubKeyBase64}`);
+                } else {
+                    console.error(`❌ FATAL: Private key must be 64 bytes (Base64 length ~88). Got ${privBytes.length} bytes.`);
+                }
+            } catch (e) {
+                console.error("❌ FATAL: Invalid Base64 in --key argument.");
+            }
         }
 
         await updateWitnessSchedule();
@@ -148,10 +168,11 @@ async function produceBlock(index, prevHash) {
     // ED25519 SIGNING
     try {
         const privateKeyBytes = decodeBase64(CONFIG.PRIVATE_KEY);
+        if (privateKeyBytes.length !== 64) throw new Error("Invalid key length");
         const signature = nacl.sign.detached(Buffer.from(block.hash), privateKeyBytes);
         block.witnessSignature = encodeBase64(signature);
     } catch (e) {
-        console.error("❌ SIGNING_FAILED: Invalid Private Key Format");
+        console.error(`❌ SIGNING_FAILED for Block #${index}: ${e.message}`);
         return;
     }
     
