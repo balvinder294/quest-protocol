@@ -31,7 +31,6 @@ interface ChainContextType {
   setNodeUrl: (url: string) => void;
   updateSignerKey: (pubKey: string) => void;
   refreshState: () => void;
-  // Fixed: Added missing properties for Admin, Leaderboard, Predictor and SpaceAttackGame
   mintTokens: (amount: number, to: string) => void;
   createSnapshot: () => void;
   restoreSnapshot: (file: File) => Promise<void>;
@@ -66,10 +65,8 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     username: null, balance: 0, stakedBalance: 0, mana: 100, maxMana: 100, hasGamePass: false, isAdmin: false, inventory: []
   });
 
-  // Fixed: Added state for leaderboard and predictor bets
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [myBets, setMyBets] = useState<any[]>([]);
-
   const [authMethod, setAuthMethod] = useState<AuthMethod | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -105,16 +102,15 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                         ...prev,
                         balance: msg.user.balance || 0,
                         stakedBalance: msg.user.staked || 0,
-                        hasGamePass: msg.user.has_pass || false,
+                        hasGamePass: msg.user.has_pass === true, // Fixed: ensure boolean check
                         isAdmin: msg.user.is_admin || (msg.user.username === ADMIN_USER),
                         inventory: msg.inventory || [],
-                        signerKey: msg.user.signer_key
+                        signerKey: msg.user.pub_key // Fixed: mapped to pub_key
                     }));
                 }
                 break;
             case 'BLOCK_DATA':
                 if (msg.blocks && msg.blocks.length > 0) {
-                  // The server returns blocks sorted by index desc, so blocks[0] is the highest
                   const latestBlock = msg.blocks[0];
                   setChain(prev => ({ 
                     ...prev, 
@@ -128,10 +124,9 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
             case 'NEW_BLOCK':
                 setChain(prev => {
                     if (prev.blocks.some(b => b.index === msg.block.index)) return prev;
-                    const newBlocks = [...prev.blocks, msg.block];
                     return { 
                       ...prev, 
-                      blocks: newBlocks, 
+                      blocks: [...prev.blocks, msg.block], 
                       height: Math.max(prev.height, msg.block.index),
                       witnesses: msg.witnesses || prev.witnesses, 
                       currentWitness: msg.currentWitness || prev.currentWitness 
@@ -141,9 +136,6 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                 break;
             case 'PUSH_TX':
                 if (msg.tx) setChain(prev => ({ ...prev, pendingTransactions: [...prev.pendingTransactions, msg.tx] }));
-                break;
-            case 'LEADERBOARD_DATA':
-                if (msg.leaderboard) setLeaderboard(msg.leaderboard);
                 break;
           }
         } catch (e) { }
@@ -164,7 +156,6 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (verified) {
         localStorage.setItem(STORAGE_KEYS.USER, username);
         setUser(prev => ({ ...prev, username }));
-        // Fixed: Set auth method on login
         setAuthMethod(method);
         wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username }));
         return { success: true, msg: "Linked." };
@@ -181,18 +172,12 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     if (!user.username) return;
     const tx: Transaction = { id: `tx_${generateId()}`, from: user.username, to, amount, type, timestamp: Date.now(), memo };
     wsRef.current?.send(JSON.stringify({ type: 'PUSH_TX', tx }));
-    
-    // Track predictor bets locally
-    if (memo.startsWith('PREDICT:')) {
-      setMyBets(prev => [{ ...tx, draw_id: chain.height + 1, number: parseInt(memo.split(':')[1]) }, ...prev]);
-    }
   };
 
   const mineBlock = async () => {
     if (!userRef.current.username || userRef.current.username !== chain.currentWitness) return;
     const lastBlock = chain.blocks[chain.blocks.length - 1];
     const transactions = [...chain.pendingTransactions];
-    
     const block: any = { 
       index: (lastBlock ? lastBlock.index : 0) + 1, 
       previousHash: (lastBlock ? lastBlock.hash : '0'.repeat(64)), 
@@ -202,15 +187,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
       transactions,
       merkleRoot: calculateMerkleRoot(transactions)
     };
-    
     block.hash = simpleHash(JSON.stringify(block));
-    
-    // ATTACH SIGNATURE
-    const priv = localStorage.getItem(STORAGE_KEYS.SIGNER_PRIVATE);
-    if (priv) {
-      block.witnessSignature = simpleHash(block.hash + priv);
-    }
-
     wsRef.current?.send(JSON.stringify({ type: 'NEW_BLOCK', block }));
   };
 
@@ -218,12 +195,16 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     sendTransaction(pubKey, 0, 'Signer Update', 'UPDATE_SIGNER');
   };
 
+  const buyGamePass = () => {
+      // Direct pass purchase burns 500 QUEST
+      sendTransaction(TREASURY_ACCOUNT, GAME_PASS_COST, 'NFT_MINT:ACCESS:GAME_PASS:0', 'MINT');
+      alert("Purchase signal broadcast. It may take 1-2 blocks to verify.");
+  };
+  
   const voteForWitness = (witness: string) => sendTransaction(witness, 0, `Voted ${witness}`, 'VOTE');
   const stakeTokens = (amount: number) => sendTransaction('STAKING_CONTRACT', amount, '', 'STAKE');
   const unstakeTokens = (amount: number) => sendTransaction('STAKING_CONTRACT', amount, '', 'UNSTAKE');
-  const buyGamePass = () => sendTransaction(TREASURY_ACCOUNT, GAME_PASS_COST, 'NFT_MINT:ACCESS:GAME_PASS:0', 'MINT');
   const mintNodePass = () => sendTransaction(TREASURY_ACCOUNT, NODE_PASS_COST, 'NFT_MINT:CHARACTER:NODE_PASS:0', 'MINT');
-  
   const addGameReward = (amount: number, game: string) => {
     if (user.username) wsRef.current?.send(JSON.stringify({ type: 'PUSH_TX', tx: { id: `r_${generateId()}`, from: TREASURY_ACCOUNT, to: user.username, amount, type: 'REWARD', timestamp: Date.now(), memo: `Game: ${game}` } }));
   };
@@ -244,8 +225,6 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
   const upgradeNFT = (id: string, cost: number, bonus: number) => sendTransaction(TREASURY_ACCOUNT, cost, `UPGRADE_NFT:${id}:${bonus}`);
   const promoteNFT = (id: string, sub: string, cost: number) => sendTransaction(TREASURY_ACCOUNT, cost, `PROMOTE_NFT:${id}:${sub}`);
-  
-  // Fixed: Implemented missing Admin methods
   const mintTokens = (amount: number, to: string) => sendTransaction(to, amount, 'Treasury Mint', 'MINT');
   
   const createSnapshot = () => {
@@ -263,11 +242,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const data = JSON.parse(text);
     if (data.chain) {
       setChain(data.chain);
-      alert("Local state restored from snapshot.");
+      alert("Local state restored.");
     }
   };
 
-  // Fixed: Implemented missing game and governance methods
   const addNFTExperience = (nftId: string, xp: number) => {
     sendTransaction(TREASURY_ACCOUNT, 0, `ADD_XP:${nftId}:${xp}`, 'TRANSFER');
   };
