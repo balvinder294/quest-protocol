@@ -1,12 +1,14 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.11
- * STRICT SEQUENTIAL CONSENSUS + DPOS TALLY + CRYPTO SIGNING
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.12
+ * STRICT ED25519 CONSENSUS + EPOCH SCHEDULING + AUTO SYNC
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
 import { MongoClient } from 'mongodb';
 import minimist from 'minimist';
+import nacl from 'tweetnacl';
+import { decodeBase64, encodeBase64 } from 'tweetnacl-util';
 import { simpleHash, generateId } from './services/chainUtils.js';
 
 const argv = minimist(process.argv.slice(2));
@@ -15,16 +17,15 @@ const CONFIG = {
     MONGO_URI: argv.mongo || 'mongodb://localhost:27017',
     DB_NAME: `quest_protocol_${argv.db || 'node'}`,
     WITNESS_NAME: argv.name || 'tekraze',
-    PRIVATE_KEY: argv.key || null, // Private key for signing blocks
+    PRIVATE_KEY: argv.key || null, 
     PEER_URLS: argv.peers ? argv.peers.toString().split(',') : [],
     MAX_WITNESSES: 21,
     MAX_SUPPLY: 1000000000,
-    GENESIS_VALIDATOR: 'tekraze',
-    DEFAULT_NODES: ['tekraze', 'kamranrkploy', 'node_gamma'],
     TREASURY: 'PROTOCOL_TREASURY',
     CHAIN_ID: 'quest_mainnet_v1',
     BLOCK_INTERVAL: 3000,
-    WELCOME_BONUS: 1000
+    WELCOME_BONUS: 1000,
+    EPOCH_LENGTH: 50
 };
 
 const SEEN_TX_IDS = new Set();
@@ -32,10 +33,23 @@ const SEEN_BLOCK_HASHES = new Set();
 const CACHE_LIMIT = 5000;
 
 let db, client;
-let currentWitnessSchedule = [...CONFIG.DEFAULT_NODES];
+let currentWitnessSchedule = ['tekraze', 'kamranrkploy', 'node_gamma'];
 let activePeers = new Map(); 
 let pendingConnections = new Set();
 let isStandalone = false;
+
+// Canonical Serializer for Deterministic Hashing
+function canonicalBlockHash(block) {
+    const payload =
+        `${block.index}|` +
+        `${block.previousHash}|` +
+        `${block.timestamp}|` +
+        `${block.validator}|` +
+        `${block.chainId}|` +
+        `${JSON.stringify(block.transactions)}`;
+
+    return simpleHash(payload);
+}
 
 async function initMongo() {
     try {
@@ -54,7 +68,6 @@ async function initMongo() {
         await db.collection('voter_prefs').createIndex({ username: 1 }, { unique: true });
         await db.collection('witness_stats').createIndex({ username: 1 }, { unique: true });
 
-        // Ensure Treasury
         const treasury = await db.collection('accounts').findOne({ username: CONFIG.TREASURY });
         if (!treasury) {
             await db.collection('accounts').insertOne({ username: CONFIG.TREASURY, balance: 500000000, staked: 0 });
@@ -66,7 +79,7 @@ async function initMongo() {
         setInterval(attemptBlockProduction, CONFIG.BLOCK_INTERVAL);
         setInterval(checkConnections, 30000);
         setInterval(cleanupCaches, 60000); 
-        console.log(`[NODE] Quest Protocol v1.9.11 [SIGNED_BLOCKS]: @${CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] Quest Protocol v1.9.12 [ED25519_ENABLED]: @${CONFIG.WITNESS_NAME}`);
         if (!CONFIG.PRIVATE_KEY) console.warn("⚠️ NO PRIVATE KEY LOADED. BLOCK PRODUCTION WILL FAIL.");
     } catch (e) {
         process.exit(1);
@@ -82,9 +95,15 @@ async function updateWitnessSchedule() {
     try {
         const topWitnesses = await db.collection('witness_stats').find({ total_votes: { $gt: 0 } }).sort({ total_votes: -1, username: 1 }).limit(CONFIG.MAX_WITNESSES).toArray();
         const names = topWitnesses.map(w => w.username);
-        const combined = Array.from(new Set([...names, ...CONFIG.DEFAULT_NODES]));
+        const combined = Array.from(new Set([...names, 'tekraze', 'kamranrkploy', 'node_gamma']));
         currentWitnessSchedule = combined.slice(0, CONFIG.MAX_WITNESSES);
-    } catch (e) { currentWitnessSchedule = [...CONFIG.DEFAULT_NODES]; }
+    } catch (e) { }
+}
+
+async function maybeUpdateSchedule(blockHeight) {
+    if (blockHeight % CONFIG.EPOCH_LENGTH !== 0) return;
+    console.log(`[EPOCH] Reaching block ${blockHeight}. Refreshing witness schedule.`);
+    await updateWitnessSchedule();
 }
 
 async function attemptBlockProduction() {
@@ -96,7 +115,7 @@ async function attemptBlockProduction() {
         
         if (!currentWitnessSchedule || currentWitnessSchedule.length === 0) return;
 
-        const scheduleIndex = (nextIndex - 1) % currentWitnessSchedule.length;
+        const scheduleIndex = nextIndex % currentWitnessSchedule.length;
         const expectedLeader = currentWitnessSchedule[scheduleIndex];
 
         if (expectedLeader === CONFIG.WITNESS_NAME) {
@@ -121,11 +140,17 @@ async function produceBlock(index, prevHash) {
         chainId: CONFIG.CHAIN_ID, 
         transactions: pendingTxs 
     };
-    block.hash = simpleHash(JSON.stringify(block));
     
-    // SIGN BLOCK
-    if (CONFIG.PRIVATE_KEY) {
-        block.witnessSignature = simpleHash(block.hash + CONFIG.PRIVATE_KEY);
+    block.hash = canonicalBlockHash(block);
+    
+    // ED25519 SIGNING
+    try {
+        const privateKeyBytes = decodeBase64(CONFIG.PRIVATE_KEY);
+        const signature = nacl.sign.detached(Buffer.from(block.hash), privateKeyBytes);
+        block.witnessSignature = encodeBase64(signature);
+    } catch (e) {
+        console.error("❌ SIGNING_FAILED: Invalid Private Key Format");
+        return;
     }
     
     if (await processIncomingBlock(block)) {
@@ -140,23 +165,39 @@ async function processIncomingBlock(block) {
     const latestBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
     const localHeight = latestBlock ? latestBlock.index : 0;
     
-    if (block.index !== localHeight + 1) return false;
+    // MISSING BLOCK AUTO-SYNC
+    if (block.index > localHeight + 1) {
+        console.log(`⚠️ Height Gap Detected: Local=${localHeight}, Incoming=${block.index}. Triggering Sync.`);
+        broadcast({ type: 'GET_BLOCKS' });
+        return false;
+    }
+    if (block.index <= localHeight) return true;
 
-    // Schedule Check
-    const scheduleIndex = (block.index - 1) % currentWitnessSchedule.length;
+    // Leader Math
+    const scheduleIndex = block.index % currentWitnessSchedule.length;
     const expectedLeader = currentWitnessSchedule[scheduleIndex];
     if (block.validator !== expectedLeader) return false;
 
-    // Signature Check
+    // ED25519 SIGNATURE VERIFICATION
     const validatorAccount = await db.collection('accounts').findOne({ username: block.validator });
     if (validatorAccount && validatorAccount.signer_key) {
         if (!block.witnessSignature) {
-            console.log(`❌ Missing signature for block #${block.index}`);
+            console.log(`❌ BLOCK_REJECTED: Missing signature for block #${block.index}`);
             return false;
         }
-        // Simulation: signature verification logic
-        // In this proto, we assume if it exists and matches the validator's claim, it's verified
-        // Real logic would be ed25519.verify(block.witnessSignature, block.hash, validatorAccount.signer_key)
+        try {
+            const publicKeyBytes = decodeBase64(validatorAccount.signer_key);
+            const signatureBytes = decodeBase64(block.witnessSignature);
+            const isValid = nacl.sign.detached.verify(Buffer.from(block.hash), signatureBytes, publicKeyBytes);
+            
+            if (!isValid) {
+                console.log(`❌ BLOCK_REJECTED: Invalid Ed25519 Signature`);
+                return false;
+            }
+        } catch (err) {
+            console.log(`❌ BLOCK_REJECTED: Signature Decode Error`);
+            return false;
+        }
     }
 
     const session = !isStandalone ? client.startSession() : null;
@@ -164,7 +205,9 @@ async function processIncomingBlock(block) {
         if (session) await session.withTransaction(async () => { await executeBlockLogic(block, session); });
         else await executeBlockLogic(block, null);
         SEEN_BLOCK_HASHES.add(block.hash);
-        await updateWitnessSchedule();
+        
+        // Epoch Schedule Management
+        await maybeUpdateSchedule(block.index);
         return true;
     } catch (e) { return e.code === 11000; } 
     finally { if (session) await session.endSession(); }
@@ -236,7 +279,6 @@ wss.on('connection', (ws) => {
                 let user = await db.collection('accounts').findOne({ username: rpc.username });
                 const inventory = await db.collection('nfts').find({ owner: rpc.username }).toArray();
                 
-                // Welcome Bonus Logic
                 if (!user && rpc.username && !rpc.username.includes(' ')) {
                     const welcomeTx = {
                         id: `welcome_${generateId()}`,
