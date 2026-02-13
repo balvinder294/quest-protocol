@@ -50,6 +50,7 @@ export interface ChainState {
   pendingTransactions: Transaction[];
   totalSupply: number;
   totalBurned: number;
+  height: number; // The absolute latest block index
   accounts: Record<string, number>;
   passes: Record<string, boolean>;
   witnesses: string[];
@@ -69,7 +70,7 @@ export const LOGIN_BONUS = 10000;
 export const GAME_PASS_COST = 500;
 export const NODE_PASS_COST = 1000;
 export const MANA_REGEN_HOURS = 24;
-export const PROTOCOL_VERSION = '1.9.7-TREASURY';
+export const PROTOCOL_VERSION = '1.9.12-CRYPTO';
 export const BURN_ACCOUNT = 'QUEST_BURN_VOID';
 export const TREASURY_ACCOUNT = 'PROTOCOL_TREASURY';
 

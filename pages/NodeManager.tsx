@@ -40,7 +40,7 @@ export const NodeManager: React.FC = () => {
     if (!hasNodePass) return;
     const messages = [
       { msg: 'P2P Handshake: node_broadcast active', type: 'info' },
-      { msg: `Consensus verified for Block #${chain.blocks.length}`, type: 'success' },
+      { msg: `Consensus verified for Block #${chain.height}`, type: 'success' },
       { msg: `Next witness in queue: ${chain.currentWitness}`, type: 'info' },
     ];
     const interval = setInterval(() => {
@@ -48,7 +48,7 @@ export const NodeManager: React.FC = () => {
       setLogs(prev => [{ ...log, time: new Date().toLocaleTimeString() }, ...prev].slice(0, 10));
     }, 5000);
     return () => clearInterval(interval);
-  }, [chain.blocks.length, hasNodePass]);
+  }, [chain.height, hasNodePass]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">

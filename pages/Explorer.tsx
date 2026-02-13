@@ -15,7 +15,7 @@ export const Explorer: React.FC = () => {
             CHAIN <span className="text-sci-cyan">EXPLORER</span>
           </h1>
           <p className="text-slate-400 font-mono text-sm">
-            Net Weight: {chain.totalSupply.toLocaleString()} QUEST | Height: {chain.blocks.length}
+            Net Weight: {chain.totalSupply.toLocaleString()} QUEST | Height: {chain.height}
           </p>
         </div>
         <div className="flex gap-4">

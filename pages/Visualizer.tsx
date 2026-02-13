@@ -1,3 +1,4 @@
+
 import React, { useMemo } from 'react';
 import { useChain } from '../context/ChainContext';
 import { Box, Share2, Zap, Shield, Cpu, Activity, Database } from 'lucide-react';
@@ -28,7 +29,7 @@ export const Visualizer: React.FC = () => {
            <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl flex gap-12 backdrop-blur-xl">
               <div className="text-center">
                  <p className="text-[10px] text-slate-500 font-mono uppercase mb-1">Height</p>
-                 <p className="text-2xl font-black text-white">{chain.blocks.length}</p>
+                 <p className="text-2xl font-black text-white">{chain.height}</p>
               </div>
               <div className="text-center border-l border-slate-800 pl-12">
                  <p className="text-[10px] text-slate-500 font-mono uppercase mb-1">Validator</p>
