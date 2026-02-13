@@ -1,7 +1,7 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.23
- * ABSOLUTE SLOT CONSENSUS + SIMPLE HASH SIGNING + PASS FIX
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.24
+ * ABSOLUTE SLOT CONSENSUS + SIMPLE HASH SIGNING + ROBUST STATE
  */
 
 import 'dotenv/config';
@@ -38,7 +38,7 @@ function canonicalBlockHash(block) {
 
 async function initMongo() {
     try {
-        console.log(`[INIT] Quest Protocol Node v1.9.23 Starting...`);
+        console.log(`[INIT] Quest Protocol Node v1.9.24 Starting...`);
         client = new MongoClient(CONFIG.MONGO_URI);
         await client.connect();
         db = client.db(CONFIG.DB_NAME);
@@ -194,11 +194,18 @@ async function executeBlockLogic(block, session) {
     if (block.transactions) {
         for (const tx of block.transactions) {
             try {
-                // Game Pass Activation Logic
-                if (tx.memo && (tx.memo.includes('GAME_PASS') || tx.memo.includes('QUEST_PASS'))) {
-                    console.log(`[LEDGER] Granting License to @${tx.from}`);
+                // Game Pass Activation Logic (Includes both purchase and admin mint)
+                const isPassMemo = tx.memo && (
+                    tx.memo.includes('GAME_PASS') || 
+                    tx.memo.includes('QUEST_PASS') || 
+                    tx.memo.includes('QUEST_GAME_PASS_MINT')
+                );
+
+                if (isPassMemo) {
+                    console.log(`[LEDGER] Setting Game Pass Flag: @${tx.from === CONFIG.TREASURY ? tx.to : tx.from}`);
+                    const targetUser = tx.from === CONFIG.TREASURY ? tx.to : tx.from;
                     await db.collection('accounts').updateOne(
-                        { username: tx.from }, 
+                        { username: targetUser }, 
                         { $set: { has_pass: true } }, 
                         { ...opts, upsert: true }
                     );
@@ -214,7 +221,16 @@ async function executeBlockLogic(block, session) {
                 // Track NFTs
                 if (tx.memo && tx.memo.startsWith('NFT_MINT:')) {
                     const parts = tx.memo.split(':');
-                    const nft = { id: `nft_${generateId()}`, owner: tx.from, type: parts[1], subType: parts[2], value: Number(parts[3]), level: 1, xp: 0 };
+                    const nft = { 
+                        id: `nft_${generateId()}`, 
+                        owner: tx.to, // Receiver of the mint
+                        type: parts[1], 
+                        subType: parts[2], 
+                        value: Number(parts[3]), 
+                        level: 1, 
+                        xp: 0,
+                        rarity: 'COMMON'
+                    };
                     await db.collection('nfts').insertOne(nft, opts);
                 }
 
@@ -243,7 +259,10 @@ wss.on('connection', (ws) => {
             if (rpc.type === 'QUERY_STATE') {
                 const userAccount = await db.collection('accounts').findOne({ username: rpc.username });
                 const inventory = await db.collection('nfts').find({ owner: rpc.username }).toArray();
-                ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user: userAccount, inventory }));
+                
+                // Always return an object so the UI can update basic fields
+                const responseUser = userAccount || { username: rpc.username, balance: 0, staked: 0, has_pass: false };
+                ws.send(JSON.stringify({ type: 'STATE_RESPONSE', user: responseUser, inventory: inventory || [] }));
             }
             
             if (rpc.type === 'NEW_BLOCK') await processIncomingBlock(rpc.block);
@@ -255,7 +274,9 @@ wss.on('connection', (ws) => {
                     broadcast(rpc, ws);
                 }
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error(`[WS_ERR] ${e.message}`);
+        }
     });
 });
 

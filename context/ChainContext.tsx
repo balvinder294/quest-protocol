@@ -97,15 +97,19 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
           switch(msg.type) {
             case 'PONG': setChain(prev => ({ ...prev, connectedNodeName: msg.name })); break;
             case 'STATE_RESPONSE':
-                if (msg.user) {
+                if (msg.user || msg.inventory) {
+                    const inv = msg.inventory || [];
+                    // Derive Game Pass from inventory check OR flat flag for absolute reliability
+                    const hasPassInInventory = inv.some((i: any) => i.subType === 'GAME_PASS' || i.memo?.includes('GAME_PASS'));
+                    
                     setUser(prev => ({
                         ...prev,
-                        balance: msg.user.balance || 0,
-                        stakedBalance: msg.user.staked || 0,
-                        hasGamePass: !!msg.user.has_pass, // Guaranteed boolean mapping
-                        isAdmin: msg.user.is_admin || (msg.user.username === ADMIN_USER),
-                        inventory: msg.inventory || [],
-                        signerKey: msg.user.pub_key
+                        balance: msg.user?.balance || 0,
+                        stakedBalance: msg.user?.staked || 0,
+                        hasGamePass: !!(msg.user?.has_pass || hasPassInInventory),
+                        isAdmin: msg.user?.is_admin || (msg.user?.username === ADMIN_USER),
+                        inventory: inv,
+                        signerKey: msg.user?.pub_key
                     }));
                 }
                 break;
@@ -132,7 +136,10 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
                       currentWitness: msg.currentWitness || prev.currentWitness 
                     };
                 });
-                if (userRef.current.username) wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username: userRef.current.username }));
+                // Refresh local user state immediately after a block is sealed
+                if (userRef.current.username) {
+                    wsRef.current?.send(JSON.stringify({ type: 'QUERY_STATE', username: userRef.current.username }));
+                }
                 break;
             case 'PUSH_TX':
                 if (msg.tx) setChain(prev => ({ ...prev, pendingTransactions: [...prev.pendingTransactions, msg.tx] }));
