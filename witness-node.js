@@ -1,7 +1,7 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.14
- * ROBUST ED25519 CONSENSUS + ENV CONFIG SUPPORT
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.15
+ * ROBUST ED25519 CONSENSUS + VERBOSE DEBUG LOGGING
  */
 
 import 'dotenv/config';
@@ -80,6 +80,7 @@ function processPrivateKey(base64Key) {
 
 async function initMongo() {
     try {
+        console.log(`[INIT] Connecting to MongoDB: ${CONFIG.MONGO_URI}`);
         client = new MongoClient(CONFIG.MONGO_URI);
         await client.connect();
         db = client.db(CONFIG.DB_NAME);
@@ -120,7 +121,7 @@ async function initMongo() {
         setInterval(attemptBlockProduction, CONFIG.BLOCK_INTERVAL);
         setInterval(checkConnections, 30000);
         setInterval(cleanupCaches, 60000); 
-        console.log(`[NODE] Quest Protocol v1.9.14 [ENV_LOADED]: @${CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] Quest Protocol v1.9.15 [DEBUG_MODE]: @${CONFIG.WITNESS_NAME}`);
     } catch (e) {
         console.error("[INIT_ERROR]", e);
         process.exit(1);
@@ -138,7 +139,10 @@ async function updateWitnessSchedule() {
         const names = topWitnesses.map(w => w.username);
         const combined = Array.from(new Set([...names, 'tekraze', 'kamranrkploy', 'node_gamma']));
         currentWitnessSchedule = combined.slice(0, CONFIG.MAX_WITNESSES);
-    } catch (e) { }
+        console.log(`[CONSENSUS] Schedule Updated: [${currentWitnessSchedule.join(', ')}]`);
+    } catch (e) { 
+        console.error(`[CONSENSUS] Failed to update schedule: ${e.message}`);
+    }
 }
 
 async function maybeUpdateSchedule(blockHeight) {
@@ -149,22 +153,37 @@ async function maybeUpdateSchedule(blockHeight) {
 
 async function attemptBlockProduction() {
     try {
-        if (!CONFIG.PRIVATE_KEY) return;
+        if (!CONFIG.PRIVATE_KEY) {
+            console.warn(`[PRODUCER] Block production attempt skipped: No private key found for @${CONFIG.WITNESS_NAME}`);
+            return;
+        }
 
         const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
         const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
         
-        if (!currentWitnessSchedule || currentWitnessSchedule.length === 0) return;
+        if (!currentWitnessSchedule || currentWitnessSchedule.length === 0) {
+            console.error(`[PRODUCER] Stalled: Witness schedule is empty.`);
+            return;
+        }
 
         const scheduleIndex = nextIndex % currentWitnessSchedule.length;
         const expectedLeader = currentWitnessSchedule[scheduleIndex];
 
+        // Detailed leader tracking
         if (expectedLeader === CONFIG.WITNESS_NAME) {
+            console.log(`[DEBUG] It is my turn! Height: ${nextIndex} | Schedule Index: ${scheduleIndex} | Schedule Len: ${currentWitnessSchedule.length}`);
+            
             const collision = await db.collection('blocks').findOne({ index: nextIndex });
-            if (collision) return;
+            if (collision) {
+                console.log(`[DEBUG] Collision detected: Block #${nextIndex} already exists in DB.`);
+                return;
+            }
 
-            console.log(`🧭 Height ${nextIndex} → Leader: ${expectedLeader} (Me)`);
+            console.log(`🧭 Height ${nextIndex} → Producing block...`);
             await produceBlock(nextIndex, lastBlock ? lastBlock.hash : '0'.repeat(64));
+        } else {
+            // Optional: Comment out if too noisy, but useful to see if the nodes agree on whose turn it is
+            // console.log(`[DEBUG] Idle. Height: ${nextIndex} | Next Leader: @${expectedLeader} | Me: @${CONFIG.WITNESS_NAME}`);
         }
     } catch (e) {
         console.error("[PRODUCER_ERROR]", e);
@@ -172,59 +191,78 @@ async function attemptBlockProduction() {
 }
 
 async function produceBlock(index, prevHash) {
-    const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
-    const block = { 
-        index, 
-        previousHash: prevHash, 
-        timestamp: Date.now(), 
-        validator: CONFIG.WITNESS_NAME, 
-        chainId: CONFIG.CHAIN_ID, 
-        transactions: pendingTxs 
-    };
-    
-    block.hash = canonicalBlockHash(block);
-    
-    // ED25519 SIGNING
     try {
+        const pendingTxs = await db.collection('transactions').find({ block_index: null }).limit(50).toArray();
+        console.log(`[PRODUCER] Sealing block #${index} with ${pendingTxs.length} transactions.`);
+        
+        const block = { 
+            index, 
+            previousHash: prevHash, 
+            timestamp: Date.now(), 
+            validator: CONFIG.WITNESS_NAME, 
+            chainId: CONFIG.CHAIN_ID, 
+            transactions: pendingTxs 
+        };
+        
+        block.hash = canonicalBlockHash(block);
+        
+        // ED25519 SIGNING
         const secretKey = processPrivateKey(CONFIG.PRIVATE_KEY);
         if (!secretKey) throw new Error("Invalid private key during production");
         
         const hashBytes = Buffer.from(block.hash);
         const signature = nacl.sign.detached(new Uint8Array(hashBytes), new Uint8Array(secretKey));
         block.witnessSignature = encodeBase64(signature);
+        
+        console.log(`[PRODUCER] Block #${index} signed. Local Hash: ${block.hash.substring(0, 16)}...`);
+        
+        const success = await processIncomingBlock(block);
+        if (success) {
+            console.log(`[PRODUCER] Block #${index} locally committed. Broadcasting to ${activePeers.size} peers.`);
+            broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
+        } else {
+            console.error(`[PRODUCER] Block #${index} failed local commit logic.`);
+        }
     } catch (e) {
         console.error(`❌ SIGNING_FAILED for Block #${index}: ${e.message}`);
-        return;
-    }
-    
-    if (await processIncomingBlock(block)) {
-        SEEN_BLOCK_HASHES.add(block.hash);
-        broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
     }
 }
 
 async function processIncomingBlock(block) {
-    if (!block || !block.hash || SEEN_BLOCK_HASHES.has(block.hash)) return true;
+    if (!block || !block.hash) return false;
+    
+    // Check if we've already handled this specific hash recently
+    if (SEEN_BLOCK_HASHES.has(block.hash)) return true;
     
     const latestBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
     const localHeight = latestBlock ? latestBlock.index : 0;
     
+    console.log(`[SYNC] Processing Incoming: #${block.index} from @${block.validator} | Local Height: ${localHeight}`);
+
     if (block.index > localHeight + 1) {
+        console.log(`[SYNC] Gap detected! Received #${block.index}, but local height is ${localHeight}. Requesting sync.`);
         broadcast({ type: 'GET_BLOCKS' });
         return false;
     }
-    if (block.index <= localHeight) return true;
+    
+    if (block.index <= localHeight) {
+        console.log(`[SYNC] Block #${block.index} is old. Ignoring.`);
+        return true; 
+    }
 
-    // Leader Math
+    // Leader Math Validation
     const scheduleIndex = block.index % currentWitnessSchedule.length;
     const expectedLeader = currentWitnessSchedule[scheduleIndex];
-    if (block.validator !== expectedLeader) return false;
+    if (block.validator !== expectedLeader) {
+        console.error(`[CONSENSUS] REJECTED: Block #${block.index} validator mismatch. Expected: @${expectedLeader}, Got: @${block.validator}`);
+        return false;
+    }
 
     // ED25519 SIGNATURE VERIFICATION
     const validatorAccount = await db.collection('accounts').findOne({ username: block.validator });
     if (validatorAccount && validatorAccount.signer_key) {
         if (!block.witnessSignature) {
-            console.log(`❌ BLOCK_REJECTED: Missing signature for block #${block.index}`);
+            console.error(`❌ BLOCK_REJECTED: Missing signature for block #${block.index}`);
             return false;
         }
         try {
@@ -239,25 +277,39 @@ async function processIncomingBlock(block) {
             );
             
             if (!isValid) {
-                console.log(`❌ BLOCK_REJECTED: Invalid Ed25519 Signature`);
+                console.error(`❌ BLOCK_REJECTED: Invalid Ed25519 Signature for #${block.index}`);
                 return false;
             }
         } catch (err) {
-            console.log(`❌ BLOCK_REJECTED: Signature Decode Error`);
+            console.error(`❌ BLOCK_REJECTED: Signature Decode Error for #${block.index}`);
             return false;
         }
+    } else {
+        console.warn(`[CONSENSUS] Warning: No signer_key found for validator @${block.validator}. Allowing block (Identity bootstrapping).`);
     }
 
     const session = !isStandalone ? client.startSession() : null;
     try {
-        if (session) await session.withTransaction(async () => { await executeBlockLogic(block, session); });
-        else await executeBlockLogic(block, null);
+        if (session) {
+            await session.withTransaction(async () => { 
+                await executeBlockLogic(block, session); 
+            });
+        } else {
+            await executeBlockLogic(block, null);
+        }
+        
         SEEN_BLOCK_HASHES.add(block.hash);
+        console.log(`✅ Block #${block.index} SEALED successfully by @${block.validator}`);
         
         await maybeUpdateSchedule(block.index);
         return true;
-    } catch (e) { return e.code === 11000; } 
-    finally { if (session) await session.endSession(); }
+    } catch (e) { 
+        console.error(`[CONSENSUS] Failed to commit block #${block.index}: ${e.message}`);
+        return e.code === 11000; 
+    } 
+    finally { 
+        if (session) await session.endSession(); 
+    }
 }
 
 async function executeBlockLogic(block, session) {
@@ -360,9 +412,14 @@ function connectToPeer(url) {
         const ws = new WebSocket(url);
         ws.on('open', () => {
             activePeers.set(url, ws);
+            console.log(`[P2P] Connected to Peer: ${url}`);
             ws.send(JSON.stringify({ type: 'GET_BLOCKS' }));
         });
-        ws.on('close', () => { activePeers.delete(url); setTimeout(() => connectToPeer(url), 10000); });
+        ws.on('close', () => { 
+            activePeers.delete(url); 
+            console.log(`[P2P] Peer Disconnected: ${url}. Retrying in 10s...`);
+            setTimeout(() => connectToPeer(url), 10000); 
+        });
         ws.on('error', () => { pendingConnections.delete(url); });
     } catch (e) { pendingConnections.delete(url); }
 }
