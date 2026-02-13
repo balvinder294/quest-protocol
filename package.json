@@ -2,7 +2,7 @@
 {
   "name": "quest-protocol",
   "private": true,
-  "version": "1.9.12-CRYPTO",
+  "version": "1.9.14-CRYPTO",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "cluster:status": "pm2 status"
   },
   "dependencies": {
+    "dotenv": "^16.4.5",
     "lucide-react": "^0.344.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
