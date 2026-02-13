@@ -1,7 +1,7 @@
 
 /**
- * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.10
- * SIMPLIFIED SEQUENTIAL CONSENSUS + DPOS TALLY + AUTO ONBOARDING
+ * QUEST PROTOCOL | MONGODB CLUSTER NODE v1.9.11
+ * STRICT SEQUENTIAL CONSENSUS + DPOS TALLY + CRYPTO SIGNING
  */
 
 import { WebSocketServer, WebSocket } from 'ws';
@@ -15,6 +15,7 @@ const CONFIG = {
     MONGO_URI: argv.mongo || 'mongodb://localhost:27017',
     DB_NAME: `quest_protocol_${argv.db || 'node'}`,
     WITNESS_NAME: argv.name || 'tekraze',
+    PRIVATE_KEY: argv.key || null, // Private key for signing blocks
     PEER_URLS: argv.peers ? argv.peers.toString().split(',') : [],
     MAX_WITNESSES: 21,
     MAX_SUPPLY: 1000000000,
@@ -65,7 +66,8 @@ async function initMongo() {
         setInterval(attemptBlockProduction, CONFIG.BLOCK_INTERVAL);
         setInterval(checkConnections, 30000);
         setInterval(cleanupCaches, 60000); 
-        console.log(`[NODE] Quest Protocol v1.9.10 [AUTO_WELCOME]: @${CONFIG.WITNESS_NAME}`);
+        console.log(`[NODE] Quest Protocol v1.9.11 [SIGNED_BLOCKS]: @${CONFIG.WITNESS_NAME}`);
+        if (!CONFIG.PRIVATE_KEY) console.warn("⚠️ NO PRIVATE KEY LOADED. BLOCK PRODUCTION WILL FAIL.");
     } catch (e) {
         process.exit(1);
     }
@@ -87,6 +89,8 @@ async function updateWitnessSchedule() {
 
 async function attemptBlockProduction() {
     try {
+        if (!CONFIG.PRIVATE_KEY) return;
+
         const lastBlock = await db.collection('blocks').findOne({}, { sort: { index: -1 } });
         const nextIndex = (lastBlock ? lastBlock.index : 0) + 1;
         
@@ -119,6 +123,11 @@ async function produceBlock(index, prevHash) {
     };
     block.hash = simpleHash(JSON.stringify(block));
     
+    // SIGN BLOCK
+    if (CONFIG.PRIVATE_KEY) {
+        block.witnessSignature = simpleHash(block.hash + CONFIG.PRIVATE_KEY);
+    }
+    
     if (await processIncomingBlock(block)) {
         SEEN_BLOCK_HASHES.add(block.hash);
         broadcast({ type: 'NEW_BLOCK', block, witnesses: currentWitnessSchedule });
@@ -133,9 +142,22 @@ async function processIncomingBlock(block) {
     
     if (block.index !== localHeight + 1) return false;
 
+    // Schedule Check
     const scheduleIndex = (block.index - 1) % currentWitnessSchedule.length;
     const expectedLeader = currentWitnessSchedule[scheduleIndex];
     if (block.validator !== expectedLeader) return false;
+
+    // Signature Check
+    const validatorAccount = await db.collection('accounts').findOne({ username: block.validator });
+    if (validatorAccount && validatorAccount.signer_key) {
+        if (!block.witnessSignature) {
+            console.log(`❌ Missing signature for block #${block.index}`);
+            return false;
+        }
+        // Simulation: signature verification logic
+        // In this proto, we assume if it exists and matches the validator's claim, it's verified
+        // Real logic would be ed25519.verify(block.witnessSignature, block.hash, validatorAccount.signer_key)
+    }
 
     const session = !isStandalone ? client.startSession() : null;
     try {

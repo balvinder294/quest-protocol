@@ -5,7 +5,6 @@ import {
   ADMIN_USER, ADMIN_PREFIX, GAME_PASS_COST, NODE_PASS_COST,
   CHAIN_ID, STORAGE_KEYS, DEFAULT_P2P_GATEWAY, TREASURY_ACCOUNT
 } from '../types';
-// Add calculateMerkleRoot to the import from chainUtils.js
 import { simpleHash, generateId, calculateMerkleRoot } from '../services/chainUtils.js';
 import { checkBlurtAccount, verifyBlurtTransaction } from '../services/blurtService';
 
@@ -162,7 +161,7 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     const transactions = [...chain.pendingTransactions];
     
     const block: any = { 
-      index: (lastBlock ? lastBlock.index + 1 : 1), 
+      index: (lastBlock ? lastBlock.index : 0) + 1, 
       previousHash: (lastBlock ? lastBlock.hash : '0'.repeat(64)), 
       timestamp: Date.now(), 
       validator: userRef.current.username, 
@@ -172,6 +171,13 @@ export const ChainProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     };
     
     block.hash = simpleHash(JSON.stringify(block));
+    
+    // ATTACH SIGNATURE
+    const priv = localStorage.getItem(STORAGE_KEYS.SIGNER_PRIVATE);
+    if (priv) {
+      block.witnessSignature = simpleHash(block.hash + priv);
+    }
+
     wsRef.current?.send(JSON.stringify({ type: 'NEW_BLOCK', block }));
   };
 

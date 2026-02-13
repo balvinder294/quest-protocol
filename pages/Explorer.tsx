@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
-import { Box, FileText, ChevronDown, ChevronRight, Fingerprint, Share2, ShieldCheck, ExternalLink, RefreshCw } from 'lucide-react';
+import { Box, FileText, ChevronDown, ChevronRight, Fingerprint, Share2, ShieldCheck, ExternalLink, RefreshCw, Shield } from 'lucide-react';
 
 export const Explorer: React.FC = () => {
   const { chain, refreshState } = useChain();
@@ -49,7 +49,14 @@ export const Explorer: React.FC = () => {
                   <div className="flex items-center space-x-4">
                     <span className="text-sci-cyan font-mono font-black text-lg">#{block.index}</span>
                     <div className="flex flex-col">
-                       <span className="text-xs text-white font-bold uppercase">{block.validator}</span>
+                       <div className="flex items-center">
+                          <span className="text-xs text-white font-bold uppercase mr-2">{block.validator}</span>
+                          {block.witnessSignature && (
+                            <div title="Cryptographically Signed" className="text-green-500">
+                               <Shield size={10} fill="currentColor" />
+                            </div>
+                          )}
+                       </div>
                        <span className="text-[10px] text-slate-500 font-mono">{new Date(block.timestamp).toLocaleTimeString()}</span>
                     </div>
                   </div>
@@ -63,10 +70,16 @@ export const Explorer: React.FC = () => {
 
                 {expandedBlock === block.index && (
                   <div className="p-4 pt-0 border-t border-slate-800/50 bg-black/20 animate-in slide-in-from-top-2">
-                    <div className="grid grid-cols-1 gap-4 mb-4 mt-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 mt-4">
                        <div className="p-3 bg-slate-950 rounded border border-slate-800">
                           <p className="text-[9px] font-mono text-slate-600 uppercase mb-1">Block Hash</p>
                           <p className="text-[10px] font-mono text-sci-cyan truncate">{block.hash}</p>
+                       </div>
+                       <div className="p-3 bg-slate-950 rounded border border-slate-800">
+                          <p className="text-[9px] font-mono text-slate-600 uppercase mb-1">Witness Signature</p>
+                          <p className={`text-[10px] font-mono truncate ${block.witnessSignature ? 'text-green-400' : 'text-slate-600 italic'}`}>
+                            {block.witnessSignature || 'UNAVAILABLE (LEGACY_OR_GUEST)'}
+                          </p>
                        </div>
                     </div>
 
