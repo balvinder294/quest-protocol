@@ -1,9 +1,10 @@
+
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
 import { Box, FileText, ChevronDown, ChevronRight, Fingerprint, Share2, ShieldCheck, ExternalLink, RefreshCw } from 'lucide-react';
 
 export const Explorer: React.FC = () => {
-  const { chain, syncWithBlurt } = useChain();
+  const { chain, refreshState } = useChain();
   const [expandedBlock, setExpandedBlock] = useState<number | null>(null);
 
   return (
@@ -19,12 +20,11 @@ export const Explorer: React.FC = () => {
         </div>
         <div className="flex gap-4">
           <button 
-            onClick={() => syncWithBlurt()}
-            disabled={chain.isSyncing}
-            className={`bg-slate-900 border border-slate-800 px-4 py-2 rounded-lg flex items-center space-x-3 transition hover:bg-slate-800 ${chain.isSyncing ? 'opacity-50' : ''}`}
+            onClick={() => refreshState()}
+            className="bg-slate-900 border border-slate-800 px-4 py-2 rounded-lg flex items-center space-x-3 transition hover:bg-slate-800"
           >
-             <RefreshCw size={16} className={`text-sci-cyan ${chain.isSyncing ? 'animate-spin' : ''}`} />
-             <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">{chain.isSyncing ? 'Scanning Blurt...' : 'Sync with Mainnet'}</span>
+             <RefreshCw size={16} className="text-sci-cyan" />
+             <span className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Refresh State</span>
           </button>
           <div className="bg-slate-900 border border-slate-800 px-4 py-2 rounded-lg flex items-center space-x-3">
              <ShieldCheck size={16} className="text-sci-cyan" />
@@ -54,11 +54,6 @@ export const Explorer: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center space-x-4">
-                     {block.blurtAnchorId && (
-                        <span className="bg-green-500/10 text-green-400 text-[8px] font-black border border-green-500/30 px-2 py-0.5 rounded flex items-center">
-                          MAINNET_ANCHORED
-                        </span>
-                     )}
                      <span className="bg-slate-800 px-3 py-1 rounded-full text-[10px] font-mono text-slate-300 border border-slate-700">
                         {block.transactions.length} TXs
                      </span>
@@ -68,21 +63,10 @@ export const Explorer: React.FC = () => {
 
                 {expandedBlock === block.index && (
                   <div className="p-4 pt-0 border-t border-slate-800/50 bg-black/20 animate-in slide-in-from-top-2">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 mt-4">
+                    <div className="grid grid-cols-1 gap-4 mb-4 mt-4">
                        <div className="p-3 bg-slate-950 rounded border border-slate-800">
                           <p className="text-[9px] font-mono text-slate-600 uppercase mb-1">Block Hash</p>
                           <p className="text-[10px] font-mono text-sci-cyan truncate">{block.hash}</p>
-                       </div>
-                       <div className="p-3 bg-slate-950 rounded border border-slate-800">
-                          <p className="text-[9px] font-mono text-slate-600 uppercase mb-1">Blurt Anchor (DA Proof)</p>
-                          <a 
-                            href={`https://blurtblock.herokuapp.com/tx/${block.blurtAnchorId}`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-[10px] font-mono text-sci-purple truncate hover:underline flex items-center"
-                          >
-                            {block.blurtAnchorId} <ExternalLink size={10} className="ml-1" />
-                          </a>
                        </div>
                     </div>
 
@@ -99,7 +83,7 @@ export const Explorer: React.FC = () => {
                             </div>
                             <div className="text-right">
                                <div className="text-xs font-black text-sci-cyan">{tx.amount} QUEST</div>
-                               <div className="text-[8px] text-slate-700 font-mono uppercase">Decentralized Turn</div>
+                               <div className="text-[8px] text-slate-700 font-mono uppercase">Cluster Confirmation</div>
                             </div>
                          </div>
                        ))}

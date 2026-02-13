@@ -1,13 +1,14 @@
+
 import React, { useState } from 'react';
 import { useChain } from '../context/ChainContext';
-import { ShieldAlert, Plus, User, Box, Cpu, Sword, Shield, Zap, Send, CheckCircle } from 'lucide-react';
+import { ShieldAlert, Plus, User, Box, Cpu, Sword, Shield, Zap, CheckCircle, Ticket } from 'lucide-react';
 import { ADMIN_USER } from '../types';
 import { Navigate } from 'react-router-dom';
 
 export const AdminNFTManager: React.FC = () => {
   const { user, provisionNFT } = useChain();
   const [targetUser, setTargetUser] = useState('');
-  const [nftType, setNftType] = useState<'CHARACTER' | 'AUGMENT'>('CHARACTER');
+  const [nftType, setNftType] = useState<'CHARACTER' | 'AUGMENT' | 'ACCESS'>('CHARACTER');
   const [subType, setSubType] = useState('TRAVELLER');
   const [value, setValue] = useState('0');
   const [cost, setCost] = useState('0');
@@ -18,15 +19,17 @@ export const AdminNFTManager: React.FC = () => {
   const handleMint = (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetUser.trim()) return;
-    
     provisionNFT(nftType, subType, Number(value), Number(cost), targetUser.trim());
     setSuccessMsg(`Module ${subType} successfully provisioned for @${targetUser}`);
     setTimeout(() => setSuccessMsg(''), 3000);
   };
 
-  const subTypeOptions = nftType === 'CHARACTER' 
-    ? ['TRAVELLER', 'CADET', 'ENGINEER', 'PILOT', 'COMMANDER', 'CYBORG', 'NODE_PASS'] 
-    : ['HEALTH', 'ATTACK', 'LUCK'];
+  const getSubTypes = () => {
+    if (nftType === 'CHARACTER') return ['TRAVELLER', 'CADET', 'ENGINEER', 'PILOT', 'COMMANDER', 'CYBORG'];
+    if (nftType === 'AUGMENT') return ['HEALTH', 'ATTACK', 'LUCK'];
+    if (nftType === 'ACCESS') return ['GAME_PASS', 'NODE_PASS'];
+    return [];
+  };
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12">
@@ -45,60 +48,29 @@ export const AdminNFTManager: React.FC = () => {
               <form onSubmit={handleMint} className="space-y-6">
                  <div>
                    <label className="block text-[10px] font-mono text-slate-500 uppercase mb-2">Recipient Identity</label>
-                   <div className="relative">
-                      <User className="absolute left-3 top-3 text-slate-600" size={18} />
-                      <input 
-                        value={targetUser}
-                        onChange={e => setTargetUser(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-10 pr-4 py-3 text-white focus:border-sci-cyan outline-none font-mono"
-                        placeholder="username"
-                      />
-                   </div>
+                   <input value={targetUser} onChange={e => setTargetUser(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-sci-cyan outline-none font-mono" placeholder="username" />
                  </div>
 
                  <div className="grid grid-cols-2 gap-4">
                     <div>
                        <label className="block text-[10px] font-mono text-slate-500 uppercase mb-2">Module Class</label>
-                       <select 
-                         value={nftType}
-                         onChange={e => setNftType(e.target.value as any)}
-                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none focus:border-sci-cyan font-mono appearance-none"
-                       >
+                       <select value={nftType} onChange={e => { setNftType(e.target.value as any); setSubType(e.target.value === 'ACCESS' ? 'GAME_PASS' : e.target.value === 'AUGMENT' ? 'HEALTH' : 'TRAVELLER'); }} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none focus:border-sci-cyan font-mono">
                          <option value="CHARACTER">CHARACTER</option>
                          <option value="AUGMENT">AUGMENT</option>
+                         <option value="ACCESS">ACCESS_PASS</option>
                        </select>
                     </div>
                     <div>
                        <label className="block text-[10px] font-mono text-slate-500 uppercase mb-2">Sub-Type</label>
-                       <select 
-                         value={subType}
-                         onChange={e => setSubType(e.target.value)}
-                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none focus:border-sci-cyan font-mono appearance-none"
-                       >
-                         {subTypeOptions.map(opt => <option key={opt} value={opt}>{opt}</option>)}
+                       <select value={subType} onChange={e => setSubType(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white outline-none focus:border-sci-cyan font-mono uppercase">
+                         {getSubTypes().map(opt => <option key={opt} value={opt}>{opt}</option>)}
                        </select>
                     </div>
                  </div>
 
-                 <div className="grid grid-cols-2 gap-4">
-                    <div>
-                       <label className="block text-[10px] font-mono text-slate-500 uppercase mb-2">Stat Value</label>
-                       <input 
-                         type="number"
-                         value={value}
-                         onChange={e => setValue(e.target.value)}
-                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-sci-cyan outline-none font-mono"
-                       />
-                    </div>
-                    <div>
-                       <label className="block text-[10px] font-mono text-slate-500 uppercase mb-2">Assigned Cost (QUEST)</label>
-                       <input 
-                         type="number"
-                         value={cost}
-                         onChange={e => setCost(e.target.value)}
-                         className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-sci-cyan outline-none font-mono"
-                       />
-                    </div>
+                 <div>
+                    <label className="block text-[10px] font-mono text-slate-500 uppercase mb-2">Injection Stat Value</label>
+                    <input type="number" value={value} onChange={e => setValue(e.target.value)} className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white focus:border-sci-cyan outline-none font-mono" />
                  </div>
 
                  {successMsg && (
@@ -116,25 +88,19 @@ export const AdminNFTManager: React.FC = () => {
 
         <div className="lg:col-span-5 space-y-6">
            <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl">
-              <h3 className="text-white font-black uppercase tracking-tighter mb-4 flex items-center"><Box className="mr-2 text-sci-cyan" /> FORGE SPECS</h3>
-              <div className="space-y-4">
+              <h3 className="text-white font-black uppercase tracking-tighter mb-4 flex items-center"><Box className="mr-2 text-sci-cyan" /> Forge Specs</h3>
+              <div className="space-y-4 text-[10px] font-mono text-slate-400 uppercase">
+                 <div className="flex items-center space-x-4 p-4 bg-slate-950 rounded-xl border border-slate-800">
+                    <Ticket className="text-sci-purple" size={24} />
+                    <p>Access Passes bypass standard marketplace fees.</p>
+                 </div>
                  <div className="flex items-center space-x-4 p-4 bg-slate-950 rounded-xl border border-slate-800">
                     <Cpu className="text-sci-cyan" size={24} />
-                    <p className="text-[10px] font-mono text-slate-400 leading-tight uppercase">
-                      Characters create new identities for the simulation deck.
-                    </p>
+                    <p>Characters create permanent gaming identities.</p>
                  </div>
-                 <div className="flex items-center space-x-4 p-4 bg-slate-950 rounded-xl border border-slate-800">
-                    <Zap className="text-yellow-500" size={24} />
-                    <p className="text-[10px] font-mono text-slate-400 leading-tight uppercase">
-                      Augments modify base hull parameters (HP/ATK/LUCK).
-                    </p>
-                 </div>
-                 <div className="flex items-center space-x-4 p-4 bg-slate-950 rounded-xl border border-slate-800">
-                    <Shield className="text-sci-purple" size={24} />
-                    <p className="text-[10px] font-mono text-slate-400 leading-tight uppercase">
-                      Node Passes grant the Signatory Witness role immediately.
-                    </p>
+                 <div className="p-4 bg-red-950/20 rounded-xl border border-red-900/50">
+                   <p className="text-red-400 font-bold mb-2">MAX SUPPLY WARNING</p>
+                   <p>System enforces 1,000,000,000 QUEST limit. Minting beyond this is rejected by the consensus engine.</p>
                  </div>
               </div>
            </div>

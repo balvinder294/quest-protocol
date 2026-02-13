@@ -1,13 +1,13 @@
+
 import React, { useState, useEffect } from 'react';
 import { useChain } from '../context/ChainContext';
 import { Wallet, Ticket, Activity, Send, Cpu, Pickaxe, Zap, Clock, RefreshCw, Flame, ShieldCheck, Fingerprint, Battery, Sparkles, Power } from 'lucide-react';
 import { BURN_ACCOUNT, GAME_PASS_COST } from '../types';
 
 export const Dashboard: React.FC = () => {
-  const { user, chain, buyGamePass, sendTransaction, mineBlock, activateNode } = useChain();
+  const { user, chain, buyGamePass, sendTransaction, mineBlock } = useChain();
   const [transferTo, setTransferTo] = useState('');
   const [transferAmount, setTransferAmount] = useState('');
-  const [timeLeft, setTimeLeft] = useState<string>('');
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
@@ -16,21 +16,6 @@ export const Dashboard: React.FC = () => {
     setTransferTo(''); setTransferAmount('');
   };
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const remaining = user.nodeActiveUntil - Date.now();
-      if (remaining <= 0) setTimeLeft('EXPIRED');
-      else {
-        const hours = Math.floor(remaining / 3600000);
-        const mins = Math.floor((remaining % 3600000) / 60000);
-        const secs = Math.floor((remaining % 60000) / 1000);
-        setTimeLeft(`${hours}h ${mins}m ${secs}s`);
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [user.nodeActiveUntil]);
-
-  const nodeIsActive = user.nodeActiveUntil > Date.now();
   const manaPercent = Math.min(100, (user.mana / user.maxMana) * 100);
 
   return (
@@ -88,8 +73,8 @@ export const Dashboard: React.FC = () => {
                  </div>
                  <div>
                     <h2 className="text-2xl font-black text-white">@{user.username}</h2>
-                    <p className={`text-[10px] font-mono uppercase tracking-widest ${nodeIsActive ? 'text-sci-cyan' : 'text-slate-500'}`}>
-                      {nodeIsActive ? 'NODE LEVEL 1 ACTIVE' : 'NODE OFFLINE'}
+                    <p className="text-[10px] font-mono uppercase tracking-widest text-sci-cyan">
+                      NODE PERMANENTLY ACTIVE
                     </p>
                  </div>
               </div>
@@ -98,17 +83,10 @@ export const Dashboard: React.FC = () => {
                     {user.hasGamePass ? 'GAMING_PASS_ACTIVE' : `ACTIVATE PASS (${GAME_PASS_COST})`}
                  </button>
                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center">
-                    <span className="text-[10px] text-slate-500 font-mono uppercase">Node Session</span>
-                    {nodeIsActive ? (
-                      <span className="text-xs font-black text-green-400">{timeLeft}</span>
-                    ) : (
-                      <button 
-                        onClick={activateNode}
-                        className="flex items-center bg-sci-cyan/10 hover:bg-sci-cyan/20 text-sci-cyan border border-sci-cyan/30 px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all animate-pulse"
-                      >
-                        <Power size={12} className="mr-1.5" /> Start Session
-                      </button>
-                    )}
+                    <span className="text-[10px] text-slate-500 font-mono uppercase">Node Protocol</span>
+                    <span className="text-xs font-black text-green-400 flex items-center">
+                      <Power size={12} className="mr-1.5" /> STABLE
+                    </span>
                  </div>
               </div>
            </div>

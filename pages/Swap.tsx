@@ -4,7 +4,7 @@ import { useChain } from '../context/ChainContext';
 import { ArrowRightLeft, RefreshCw, Wallet, ExternalLink, Activity, ShieldOff } from 'lucide-react';
 
 export const Swap: React.FC = () => {
-  const { user, swapTokens, syncWithBlurt } = useChain();
+  const { user, refreshState } = useChain();
   const [direction, setDirection] = useState<'IN' | 'OUT'>('IN'); // IN = BLURT -> QUEST
   const [amount, setAmount] = useState('');
   
@@ -13,7 +13,7 @@ export const Swap: React.FC = () => {
   const handleSwap = (e: React.FormEvent) => {
     e.preventDefault();
     if (!amount) return;
-    swapTokens(Number(amount), direction);
+    alert("Use the Bridge Uplink (Claim) page to verify deposits. Withdrawal protocol currently in testnet.");
     setAmount('');
   };
 
@@ -29,11 +29,8 @@ export const Swap: React.FC = () => {
           </p>
         </div>
         <div className="flex gap-2">
-            <div className="bg-orange-500/10 border border-orange-500/30 px-3 py-2 rounded text-[10px] text-orange-500 font-black uppercase flex items-center">
-                <ShieldOff size={14} className="mr-2" /> Decoupled Mode Active
-            </div>
             <button 
-              onClick={() => syncWithBlurt()}
+              onClick={() => refreshState()}
               className="flex items-center text-xs bg-slate-800 hover:bg-slate-700 text-sci-cyan px-3 py-2 rounded border border-slate-700 transition"
             >
               <RefreshCw size={14} className="mr-2" /> REFRESH_BRIDGE
@@ -111,25 +108,25 @@ export const Swap: React.FC = () => {
               <div className="space-y-4 font-mono text-sm">
                  <div className="flex justify-between items-center pb-2 border-b border-slate-800">
                    <span className="text-slate-500">Gateway Status</span>
-                   <span className="text-orange-400">DECOUPLED</span>
+                   <span className="text-green-400 font-black">OPERATIONAL</span>
                  </div>
                  <div className="flex justify-between items-center pb-2 border-b border-slate-800">
                    <span className="text-slate-500">Verification</span>
-                   <span className="text-white">Instant (Local)</span>
+                   <span className="text-white">Instant Cluster Sync</span>
                  </div>
                  <div className="flex justify-between items-center">
-                   <span className="text-slate-500">Mainnet Anchoring</span>
-                   <span className="text-slate-500 italic">Disabled</span>
+                   <span className="text-slate-500">Auto-Detection</span>
+                   <span className="text-sci-cyan">ACTIVE</span>
                  </div>
               </div>
            </div>
 
            <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
-             <h3 className="text-white font-bold mb-2">How it works</h3>
+             <h3 className="text-white font-bold mb-2">Bridge Protocol</h3>
              <ul className="list-disc pl-4 space-y-2 text-sm text-slate-400 font-mono">
-               <li>Blurt Identity is still required for account creation and login.</li>
-               <li>Sidechain transactions are now finalized purely by the MongoDB witness cluster.</li>
-               <li>Anchoring to Blurt Mainnet is currently disabled for maximum throughput.</li>
+               <li>Deposits are detected automatically via TxID scanning.</li>
+               <li>Sidechain transactions are finalized by the witness cluster.</li>
+               <li>Use the "Bridge Uplink" page for manual deposit claims.</li>
              </ul>
              <a href="https://blurt.blog" target="_blank" rel="noreferrer" className="inline-flex items-center text-xs text-sci-cyan mt-4 hover:underline">
                View Protocol Docs <ExternalLink size={10} className="ml-1"/>
